@@ -9,8 +9,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      meta.intra.42.fr
 // @connect      profile.intra.42.fr
-// @updateURL    https://raw.githubusercontent.com/yourname/my-userscript/main/my-script.user.js
-// @downloadURL  https://raw.githubusercontent.com/yourname/my-userscript/main/my-script.user.js
+// @updateURL    https://github.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/edit/main/Bangkok-Finder.user.js
+// @downloadURL  https://github.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/edit/main/Bangkok-Finder.user.js
 // @changelog    Keeps the script mounted across profile-v3 SPA navigation with a floating TH fallback button.
 // ==/UserScript==
 
