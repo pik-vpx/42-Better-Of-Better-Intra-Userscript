@@ -14,8 +14,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.3.0
-// @changelog    Optional 42 API token for official v2 data (levels, stats, campuses), session fallback kept.
+// @version      2.3.1
+// @changelog    Campus-tagged seen history so Bangkok board no longer shows other campuses.
 // ==/UserScript==
 
 
@@ -37,9 +37,11 @@
   const readFriends = () => { try { const v = JSON.parse(localStorage.getItem(FRIENDS_KEY) || '[]'); return Array.isArray(v) ? parseLogins(v.join(' ')) : []; } catch (_) { return []; } };
   const writeFriends = (l) => localStorage.setItem(FRIENDS_KEY, JSON.stringify(l));
   const readSeen = () => { try { return JSON.parse(localStorage.getItem(SEEN_KEY) || '{}') || {}; } catch (_) { return {}; } };
-  const recordSeen = (entries) => { try { const s = readSeen(); const n = Date.now(); let c = false; for (const e of entries || []) { const l = String((e && e.login) || '').toLowerCase(); if (l && (!s[l] || n - s[l] > 60000)) { s[l] = n; c = true; } } if (c) localStorage.setItem(SEEN_KEY, JSON.stringify(s)); } catch (_) {} };
+  const seenTime = (v) => (typeof v === 'number' ? v : ((v && v.t) || 0));
+  const seenCampus = (v) => (v && typeof v === 'object' ? (Number(v.c) || 0) : 0);
+  const recordSeen = (entries, campusId) => { try { const s = readSeen(); const n = Date.now(); let ch = false; for (const e of entries || []) { const l = String((e && e.login) || '').toLowerCase(); if (!l) continue; const cp = Number((e && e.campus_id) || campusId || 0); const prev = s[l]; if (!prev || n - seenTime(prev) > 60000) { s[l] = { t: n, c: cp }; ch = true; } } if (ch) localStorage.setItem(SEEN_KEY, JSON.stringify(s)); } catch (_) {} };
   const fmtAgo = (ms) => { if (!isFinite(ms) || ms < 0) ms = 0; const t = Math.floor(ms / 1000); const d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; if (d > 0) return d + 'd ' + h + 'h'; if (h > 0) return h + 'h ' + m + 'm'; if (m > 0) return m + 'm ' + s + 's'; return s + 's'; };
-  const agoLabel = (beginAt, login) => { if (beginAt) { const t = Date.parse(beginAt); if (!isNaN(t)) return fmtAgo(Date.now() - t); } if (login) { const s = readSeen()[String(login).toLowerCase()]; if (s) { const a = Date.now() - s; if (a > 36e5) return '... ' + fmtAgo(a) + ' ago'; return 'seen ' + fmtAgo(a) + ' ago'; } } return '...'; };
+  const agoLabel = (beginAt, login) => { if (beginAt) { const t = Date.parse(beginAt); if (!isNaN(t)) return fmtAgo(Date.now() - t); } if (login) { const s = readSeen()[String(login).toLowerCase()]; if (s) { const a = Date.now() - seenTime(s); if (a > 36e5) return '... ' + fmtAgo(a) + ' ago'; return 'seen ' + fmtAgo(a) + ' ago'; } } return '...'; };
   const batchFromDate = (iso) => { if (!iso) return null; const d = new Date(iso); if (isNaN(d)) return null; const y = d.getFullYear(); const n = y - 2017; if (!(n > 0 && n < 30)) return null; return { n, label: '#' + n }; };
   const getToken = () => { try { return sessionStorage.getItem('ft_intrapy_token') || ''; } catch (_) { return ''; } };
   const authedJSON = async (url) => { const tk = getToken(); const H = tk ? { Authorization: tk, Accept: 'application/json' } : { Accept: 'application/json' }; if (typeof GM_xmlhttpRequest === 'function' && /^https:\/\/(intrapy\.intra\.42\.fr|pace-system\.42\.fr)/.test(url)) return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, headers: H, responseType: 'json', timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) })); if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { headers: H }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } const r = await fetch(url, { headers: H, credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
@@ -92,8 +94,8 @@
     }
     try { const u = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login)); let level = (c[login] && c[login].level != null) ? c[login].level : null; try { const cu = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/cursus'); const main = Array.isArray(cu) ? cu.find((e) => e.slug === '42cursus') : null; if (main) level = main.level + (main.progress ? main.progress / 100 : 0); } catch (_) {} let batch = (c[login] && c[login].batch) || '', batchN = (c[login] && c[login].batchN) || 0, begin = (c[login] && c[login].begin) || ''; if (u && u.id) { try { const p = await authedJSON('https://pace-system.42.fr/api/v1/users/' + u.id + '/profile'); if (p && p.cursus_begin_date) { begin = p.cursus_begin_date; const b = batchFromDate(begin); if (b) { batch = b.label; batchN = b.n; } } } catch (_) {} } const m = { id: (u && u.id) || 0, level, batch, batchN, begin, t: now }; c[login] = m; try { localStorage.setItem(META_KEY, JSON.stringify(c)); } catch (_) {} return m; } catch (_) { return c[login] || {}; } };
   const requestJSON = async (url) => { if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, responseType: 'json', withCredentials: true, timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) })); const r = await fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
-  const getBangkok = async (force) => { if (!force && bangkokCache.data.length && Date.now() - bangkokCache.time < 60000) return bangkokCache.data; if (bangkokCache.promise) return bangkokCache.promise; bangkokCache.promise = requestJSON(CLUSTER_URL).then((data) => { bangkokCache.data = Array.isArray(data) ? data.filter((e) => e && !e.end_at && e.login && e.host) : []; bangkokCache.time = Date.now(); recordSeen(bangkokCache.data); return bangkokCache.data; }).finally(() => { bangkokCache.promise = null; }); return bangkokCache.promise; };
-  const getGlobalMap = async (force) => { if (!force && globalCache.map.size && Date.now() - globalCache.time < 60000) return globalCache.map; if (globalCache.promise) return globalCache.promise; globalCache.promise = (async () => { const urls = [CLUSTER_URL].concat(ACTIVE_CAMPUSES.filter((id) => id !== BANGKOK_CAMPUS_ID).map((id) => CLUSTER_URL + '?campus_id=' + id)); const settled = await Promise.all(urls.map(async (u) => { try { const d = await requestJSON(u); return Array.isArray(d) ? d.filter((e) => e && !e.end_at && e.login && e.host) : []; } catch (_) { return []; } })); const map = new Map(); for (const e of settled.flat()) map.set(String(e.login).toLowerCase(), e); recordSeen([...map.values()]); globalCache.map = map; globalCache.time = Date.now(); return map; })().finally(() => { globalCache.promise = null; }); return globalCache.promise; };
+  const getBangkok = async (force) => { if (!force && bangkokCache.data.length && Date.now() - bangkokCache.time < 60000) return bangkokCache.data; if (bangkokCache.promise) return bangkokCache.promise; bangkokCache.promise = requestJSON(CLUSTER_URL).then((data) => { bangkokCache.data = Array.isArray(data) ? data.filter((e) => e && !e.end_at && e.login && e.host) : [];       bangkokCache.time = Date.now(); recordSeen(bangkokCache.data, BANGKOK_CAMPUS_ID); return bangkokCache.data; }).finally(() => { bangkokCache.promise = null; }); return bangkokCache.promise; };
+  const getGlobalMap = async (force) => { if (!force && globalCache.map.size && Date.now() - globalCache.time < 60000) return globalCache.map; if (globalCache.promise) return globalCache.promise; globalCache.promise = (async () => { const urls = [CLUSTER_URL].concat(ACTIVE_CAMPUSES.filter((id) => id !== BANGKOK_CAMPUS_ID).map((id) => CLUSTER_URL + '?campus_id=' + id)); const settled = await Promise.all(urls.map(async (u) => { try { const d = await requestJSON(u); return Array.isArray(d) ? d.filter((e) => e && !e.end_at && e.login && e.host) : []; } catch (_) { return []; } }));       const map = new Map(); for (const e of settled.flat()) map.set(String(e.login).toLowerCase(), e); recordSeen([...map.values()], 0); globalCache.map = map; globalCache.time = Date.now(); return map; })().finally(() => { globalCache.promise = null; }); return globalCache.promise; };
   const CAMPUS_NAMES_KEY = 'bkk42-campus-names';
   const campusNameCache = { map: null, promise: null };
   const readCampusNames = () => { try { return JSON.parse(localStorage.getItem(CAMPUS_NAMES_KEY) || '{}') || {}; } catch (_) { return {}; } };
@@ -128,7 +130,7 @@
     const p = requestJSON(CLUSTER_URL + '?campus_id=' + id).then((data) => {
       const rows = Array.isArray(data) ? data.filter((e) => e && !e.end_at && e.login && e.host) : [];
       campusClusterCache.data.set(id, rows); campusClusterCache.time.set(id, Date.now());
-      recordSeen(rows);
+      recordSeen(rows, id);
       return rows;
     }).finally(() => { campusClusterCache.promise.delete(id); });
     campusClusterCache.promise.set(id, p);
@@ -207,7 +209,7 @@
         if (hours != null) approx = false;
       } catch (_) {}
       if (hours == null) {
-        const seen = readSeen()[login];
+        const seen = seenTime(readSeen()[login]);
         const base = seen ? Math.max(0, (now - seen) / 36e5) : 0;
         const cur = loc && loc.begin_at ? Math.max(0, (now - Date.parse(loc.begin_at)) / 36e5) : 0;
         hours = Math.min(720, base > 0 ? Math.max(cur, Math.min(60, 720 - base)) : cur);
@@ -337,8 +339,12 @@
     const roster = buildRoster([...online.keys()]);
     const snap = readMetaCache();
     let metas = roster.map((l) => ({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }));
-    if (campus !== 'all' && Number(campus) !== BANGKOK_CAMPUS_ID) {
-      const frSet = new Set(readFriends().concat(readRosterExtra()));
+    const frSet = new Set(readFriends().concat(readRosterExtra()));
+    if (campus === 'all') { /* keep everyone */ }
+    else if (Number(campus) === BANGKOK_CAMPUS_ID) {
+      const sv = readSeen();
+      metas = metas.filter((m) => m.loc || frSet.has(m.login) || seenCampus(sv[m.login]) === BANGKOK_CAMPUS_ID);
+    } else {
       metas = metas.filter((m) => m.loc || frSet.has(m.login));
     }
     const isFresh = (m2) => !!(m2.meta && (m2.meta.batchN || m2.meta.level != null));
