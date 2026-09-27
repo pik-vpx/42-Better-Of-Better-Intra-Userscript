@@ -1,0 +1,5 @@
+# Token and local files — never commit these
+*token*
+*.local.*
+.env*
+config.local.js

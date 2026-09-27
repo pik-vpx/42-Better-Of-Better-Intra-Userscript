@@ -26,6 +26,7 @@ auto-updates itself. touch grass, not settings.
 
 - friends → **manage list**: dump logins in, separated however. it figures it out
 - leaderboard → **save roster**: paste your whole promo once, rank everybody including the ghosts
+- leaderboard → **api token** (optional): paste a 42 api token to unlock official v2 data — faster levels, real stats, full campus list. without it, session mode still works fine
 - everything lives in your `localStorage`. nothing leaves your browser 🤙
 
 ## wanna contribute?

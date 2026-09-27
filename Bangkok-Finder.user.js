@@ -11,10 +11,11 @@
 // @connect      profile.intra.42.fr
 // @connect      intrapy.intra.42.fr
 // @connect      pace-system.42.fr
+// @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.2.5
-// @changelog    Verified campus names from Better Intra campus data, no more Campus-id guessing.
+// @version      2.3.0
+// @changelog    Optional 42 API token for official v2 data (levels, stats, campuses), session fallback kept.
 // ==/UserScript==
 
 
@@ -44,9 +45,52 @@
   const authedJSON = async (url) => { const tk = getToken(); const H = tk ? { Authorization: tk, Accept: 'application/json' } : { Accept: 'application/json' }; if (typeof GM_xmlhttpRequest === 'function' && /^https:\/\/(intrapy\.intra\.42\.fr|pace-system\.42\.fr)/.test(url)) return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, headers: H, responseType: 'json', timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) })); if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { headers: H }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } const r = await fetch(url, { headers: H, credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
   const readMetaCache = () => { try { return JSON.parse(localStorage.getItem(META_KEY) || '{}') || {}; } catch (_) { return {}; } };
   const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+  // SECURITY: never hardcode a token here — paste it in the Leaderboard UI box. Browser localStorage only, never in git.
+  const API_TOKEN_KEY = 'bkk42-api-token';
+  const apiStatus = { ok: null };
+  const readApiToken = () => { try { return (localStorage.getItem(API_TOKEN_KEY) || '').trim(); } catch (_) { return ''; } };
+  const apiV2 = async (path) => {
+    const tk = readApiToken();
+    if (!tk) throw new Error('no token');
+    const url = 'https://api.intra.42.fr/v2' + path;
+    if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, headers: { Authorization: 'Bearer ' + tk, Accept: 'application/json' }, responseType: 'json', timeout: 15000, onload: (r) => { if (r.status === 401 || r.status === 403) { apiStatus.ok = false; return rej(new Error('HTTP ' + r.status + ' bad token')); } if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); apiStatus.ok = true; try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) }));
+    const r = await withTimeout(fetch(url, { headers: { Authorization: 'Bearer ' + tk, Accept: 'application/json' } }), 15000);
+    if (r.status === 401 || r.status === 403) { apiStatus.ok = false; throw new Error('HTTP ' + r.status + ' bad token'); }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    apiStatus.ok = true;
+    return r.json();
+  };
+  const parseV2Stats = (s) => {
+    if (s == null) return null;
+    if (Array.isArray(s)) { const h = s.reduce((a, x) => a + Number((x && (x.total_hours || x.hours)) || 0), 0); return h > 0 ? h : null; }
+    if (typeof s === 'object') {
+      let mins = 0, any = false;
+      for (const v of Object.values(s)) {
+        if (typeof v === 'number' && isFinite(v)) { mins += v * 60; any = true; }
+        else if (typeof v === 'string') { const m = v.match(/(\d+):(\d\d)(?::(\d\d))?/); if (m) { mins += Number(m[1]) * 60 + Number(m[2]); any = true; } }
+      }
+      return any ? mins / 60 : null;
+    }
+    return null;
+  };
   const readRosterExtra = () => { try { const v = JSON.parse(localStorage.getItem(ROSTER_EXTRA_KEY) || '[]'); return Array.isArray(v) ? parseLogins(v.join(' ')) : []; } catch (_) { return []; } };
   const buildRoster = (onlineLogins) => { const set = new Set(); for (const l of (onlineLogins || [])) { const s = String(l || '').toLowerCase(); if (s) set.add(s); } for (const l of Object.keys(readSeen())) set.add(String(l).toLowerCase()); for (const l of readFriends()) set.add(String(l).toLowerCase()); for (const l of readRosterExtra()) set.add(String(l).toLowerCase()); return [...set].filter((s) => /^[a-z0-9_-]{2,30}$/.test(s)); };
-  const getUserMeta = async (login) => { login = String(login || '').toLowerCase(); if (!login) return {}; const c = readMetaCache(); const now = Date.now(); if (c[login] && now - (c[login].t || 0) < 604800000) return c[login]; try { const u = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login)); let level = (c[login] && c[login].level != null) ? c[login].level : null; try { const cu = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/cursus'); const main = Array.isArray(cu) ? cu.find((e) => e.slug === '42cursus') : null; if (main) level = main.level + (main.progress ? main.progress / 100 : 0); } catch (_) {} let batch = (c[login] && c[login].batch) || '', batchN = (c[login] && c[login].batchN) || 0, begin = (c[login] && c[login].begin) || ''; if (u && u.id) { try { const p = await authedJSON('https://pace-system.42.fr/api/v1/users/' + u.id + '/profile'); if (p && p.cursus_begin_date) { begin = p.cursus_begin_date; const b = batchFromDate(begin); if (b) { batch = b.label; batchN = b.n; } } } catch (_) {} } const m = { id: (u && u.id) || 0, level, batch, batchN, begin, t: now }; c[login] = m; try { localStorage.setItem(META_KEY, JSON.stringify(c)); } catch (_) {} return m; } catch (_) { return c[login] || {}; } };
+  const getUserMeta = async (login) => { login = String(login || '').toLowerCase(); if (!login) return {}; const c = readMetaCache(); const now = Date.now(); if (c[login] && now - (c[login].t || 0) < 604800000) return c[login];
+    if (readApiToken()) {
+      try {
+        const u = await apiV2('/users/' + encodeURIComponent(login));
+        const cus = Array.isArray(u.cursus_users) ? u.cursus_users : [];
+        const main = cus.find((e) => e && e.cursus && e.cursus.slug === '42cursus') || cus[0] || null;
+        const level = main && main.level != null ? Number(main.level) : ((c[login] && c[login].level != null) ? c[login].level : null);
+        let batch = (c[login] && c[login].batch) || '', batchN = (c[login] && c[login].batchN) || 0;
+        const begin = (main && (main.begin_at || main.created_at)) || (c[login] && c[login].begin) || '';
+        if (begin) { const b = batchFromDate(begin); if (b) { batch = b.label; batchN = b.n; } }
+        const m = { id: (u && u.id) || 0, level, batch, batchN, begin, t: now };
+        c[login] = m; try { localStorage.setItem(META_KEY, JSON.stringify(c)); } catch (_) {}
+        return m;
+      } catch (_) {}
+    }
+    try { const u = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login)); let level = (c[login] && c[login].level != null) ? c[login].level : null; try { const cu = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/cursus'); const main = Array.isArray(cu) ? cu.find((e) => e.slug === '42cursus') : null; if (main) level = main.level + (main.progress ? main.progress / 100 : 0); } catch (_) {} let batch = (c[login] && c[login].batch) || '', batchN = (c[login] && c[login].batchN) || 0, begin = (c[login] && c[login].begin) || ''; if (u && u.id) { try { const p = await authedJSON('https://pace-system.42.fr/api/v1/users/' + u.id + '/profile'); if (p && p.cursus_begin_date) { begin = p.cursus_begin_date; const b = batchFromDate(begin); if (b) { batch = b.label; batchN = b.n; } } } catch (_) {} } const m = { id: (u && u.id) || 0, level, batch, batchN, begin, t: now }; c[login] = m; try { localStorage.setItem(META_KEY, JSON.stringify(c)); } catch (_) {} return m; } catch (_) { return c[login] || {}; } };
   const requestJSON = async (url) => { if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, responseType: 'json', withCredentials: true, timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) })); const r = await fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
   const getBangkok = async (force) => { if (!force && bangkokCache.data.length && Date.now() - bangkokCache.time < 60000) return bangkokCache.data; if (bangkokCache.promise) return bangkokCache.promise; bangkokCache.promise = requestJSON(CLUSTER_URL).then((data) => { bangkokCache.data = Array.isArray(data) ? data.filter((e) => e && !e.end_at && e.login && e.host) : []; bangkokCache.time = Date.now(); recordSeen(bangkokCache.data); return bangkokCache.data; }).finally(() => { bangkokCache.promise = null; }); return bangkokCache.promise; };
   const getGlobalMap = async (force) => { if (!force && globalCache.map.size && Date.now() - globalCache.time < 60000) return globalCache.map; if (globalCache.promise) return globalCache.promise; globalCache.promise = (async () => { const urls = [CLUSTER_URL].concat(ACTIVE_CAMPUSES.filter((id) => id !== BANGKOK_CAMPUS_ID).map((id) => CLUSTER_URL + '?campus_id=' + id)); const settled = await Promise.all(urls.map(async (u) => { try { const d = await requestJSON(u); return Array.isArray(d) ? d.filter((e) => e && !e.end_at && e.login && e.host) : []; } catch (_) { return []; } })); const map = new Map(); for (const e of settled.flat()) map.set(String(e.login).toLowerCase(), e); recordSeen([...map.values()]); globalCache.map = map; globalCache.time = Date.now(); return map; })().finally(() => { globalCache.promise = null; }); return globalCache.promise; };
@@ -60,6 +104,19 @@
     const merged = Object.assign({}, STATIC_CAMPUS_NAMES, readCampusNames());
     merged[BANGKOK_CAMPUS_ID] = 'Bangkok';
     campusNameCache.map = merged;
+    if (readApiToken()) {
+      return (async () => {
+        try {
+          const d = await withTimeout(apiV2('/campus?page[size]=100'), 12000);
+          for (const cp of (Array.isArray(d) ? d : [])) {
+            const id = Number(cp && cp.id);
+            if (id && cp.name) merged[id] = String(cp.name);
+          }
+          try { localStorage.setItem(CAMPUS_NAMES_KEY, JSON.stringify(merged)); } catch (_) {}
+        } catch (_) {}
+        return merged;
+      })();
+    }
     return Promise.resolve(merged);
   };
   const campusClusterCache = { time: new Map(), data: new Map(), promise: new Map() };
@@ -136,6 +193,13 @@
       if (hit && hit.log30d != null && now - (hit.logT || 0) < 86400000) return { hours: hit.log30d, approx: !!hit.logApprox };
       let hours = null; let approx = true;
       try {
+        if (readApiToken()) {
+          const sv = await withTimeout(apiV2('/users/' + encodeURIComponent(login) + '/locations_stats'), 8000);
+          const ph = parseV2Stats(sv);
+          if (ph != null) { hours = ph; approx = false; }
+        }
+      } catch (_) {}
+      try {
         const s = await withTimeout(authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/locations_stats?range=30d'), 8000);
         const arr = s && (s.locations || s.stats || s.data || s);
         if (Array.isArray(arr)) hours = arr.reduce((a, x) => a + (Number(x.total_hours || x.hours || x.duration_hours || 0)), 0) || null;
@@ -190,7 +254,17 @@
     const isv = el('button', '', 'Save roster'); isv.type = 'button';
     isv.onclick = () => { try { localStorage.setItem(ROSTER_EXTRA_KEY, JSON.stringify(parseLogins(ta.value))); } catch (_) {} renderTop(root, false, keep()); };
     irow.append(isv, el('span', 'bkk42-hint', 'Stored locally. Merges with seen + friends.'));
-    imp.append(ta, irow); root.appendChild(imp);
+    const trow = el('div', 'bkk42-editor-row');
+    const tinput = el('input'); tinput.type = 'password';
+    tinput.placeholder = readApiToken() ? 'API token saved — paste a new one to replace' : 'Paste 42 API token (optional, stored only here)';
+    tinput.style.cssText = 'flex:1;min-width:0;padding:9px 11px;background:#2a303b;color:#fff;border:1px solid #4c5564;border-radius:5px';
+    const tsv = el('button', '', 'Save token'); tsv.type = 'button';
+    const tclr = el('button', '', 'Clear'); tclr.type = 'button';
+    const tst = el('span', 'bkk42-hint', readApiToken() ? (apiStatus.ok === false ? 'API token rejected (401) — check it' : 'API linked — official v2 active') : 'Session mode — no token');
+    tsv.onclick = () => { const v = tinput.value.trim(); if (!v) return; try { localStorage.setItem(API_TOKEN_KEY, v); } catch (_) {} apiStatus.ok = null; renderTop(root, false, keep()); };
+    tclr.onclick = () => { try { localStorage.removeItem(API_TOKEN_KEY); } catch (_) {} apiStatus.ok = null; renderTop(root, false, keep()); };
+    trow.append(tinput, tsv, tclr, tst);
+    imp.append(ta, irow, trow); root.appendChild(imp);
     const list = el('div', 'bkk42-zones'); root.appendChild(list);
     const passPresence = (m2) => presence === 'all' || (presence === 'online' ? !!m2.loc : !m2.loc);
     const passBatch = (m2) => { const bn = (m2.meta && m2.meta.batchN) || 0; if (batch === 'all') return true; if (batch === 'new') return !bn; return String(bn) === batch; };
