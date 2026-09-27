@@ -13,8 +13,8 @@
 // @connect      pace-system.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.2.3
-// @changelog    Leaderboard campus selector (Bangkok default, All, each campus) and Load 10/25/50/100/200/all.
+// @version      2.2.4
+// @changelog    Scope leaderboard roster to selected campus so switching campuses visibly changes results.
 // ==/UserScript==
 
 
@@ -274,7 +274,11 @@
     const online = new Map(locs.map((e) => [String(e.login).toLowerCase(), e]));
     const roster = buildRoster([...online.keys()]);
     const snap = readMetaCache();
-    const metas = roster.map((l) => ({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }));
+    let metas = roster.map((l) => ({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }));
+    if (campus !== 'all' && Number(campus) !== BANGKOK_CAMPUS_ID) {
+      const frSet = new Set(readFriends().concat(readRosterExtra()));
+      metas = metas.filter((m) => m.loc || frSet.has(m.login));
+    }
     const isFresh = (m2) => !!(m2.meta && (m2.meta.batchN || m2.meta.level != null));
     fillBatches(metas); fillLimits(); fillCampus(readCampusNames()); drawList(metas);
     loadCampusNames().then((names) => { if (alive()) fillCampus(names); });
