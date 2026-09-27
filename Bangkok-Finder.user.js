@@ -15,8 +15,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.16
-// @changelog    Full audit: dropped unverified endpoints, dead code and silent failures; honest stats + render guards.
+// @version      2.6.17
+// @changelog    Peerfinder status filter (Active/Pisciner/Freezing/Blackholed/Alumni), no fake Lv for pisciners, leaderboard avatars.
 // ==/UserScript==
 
 
@@ -43,6 +43,9 @@
   const fmtAgo = (ms) => { if (!isFinite(ms) || ms < 0) ms = 0; const t = Math.floor(ms / 1000); const d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; if (d > 0) return d + 'd ' + h + 'h'; if (h > 0) return h + 'h ' + m + 'm'; if (m > 0) return m + 'm ' + s + 's'; return s + 's'; };
   const agoLabel = (beginAt, login, seenMap) => { if (beginAt) { const t = Date.parse(beginAt); if (!isNaN(t)) return fmtAgo(Date.now() - t); } if (login) { const s = (seenMap || readSeen())[String(login).toLowerCase()]; if (s) { const a = Date.now() - seenTime(s); if (a > 36e5) return '... ' + fmtAgo(a) + ' ago'; return 'seen ' + fmtAgo(a) + ' ago'; } } return '...'; };
   const batchFromDate = (iso) => { if (!iso) return null; const d = new Date(iso); if (isNaN(d)) return null; const y = d.getFullYear(); const n = y - 2017; if (!(n > 0 && n < 30)) return null; return { n, label: '#' + n }; };
+  // Peerfinder parity (bundle: oe/ce) — status order and rules are their exact ones; staff are filtered from the roster, so not listed.
+  const STATUS_LIST = ['Active', 'Pisciner', 'Freezing', 'Blackholed', 'Alumni'];
+  const statusOf = (r) => (r.pis ? 'Pisciner' : r.alg ? 'Alumni' : (r.bh && Date.parse(r.bh) < Date.now() && !r.act) ? 'Blackholed' : r.act ? 'Active' : 'Freezing');
 
 
   const readMetaCache = () => { try { return JSON.parse(localStorage.getItem(META_KEY) || '{}') || {}; } catch (_) { return {}; } };
@@ -140,12 +143,16 @@
       try {
         const u = await apiV2('/users/' + encodeURIComponent(login));
         const cus = Array.isArray(u.cursus_users) ? u.cursus_users : [];
-        const main = cus.find((e) => e && e.cursus && e.cursus.slug === '42cursus') || cus[0] || null;
-        const level = main && main.level != null ? Number(main.level) : ((c[login] && c[login].level != null) ? c[login].level : null);
-        let batch = (c[login] && c[login].batch) || '', batchN = (c[login] && c[login].batchN) || 0;
-        const begin = (main && (main.begin_at || main.created_at)) || (c[login] && c[login].begin) || '';
+        const prev = c[login] || {};
+        const main = cus.find((e) => e && e.cursus && e.cursus.slug === '42cursus') || null;
+        const pisc = !main ? (cus.find((e) => e && e.cursus && (e.cursus.slug === 'c-piscine' || e.cursus.name === 'C Piscine')) || null) : null;
+        const level = main ? (main.level != null ? Number(main.level) : (prev.level != null ? prev.level : null)) : null;
+        const begin = (main && (main.begin_at || main.created_at)) || (pisc && (pisc.begin_at || pisc.created_at)) || prev.begin || '';
+        let batch = prev.batch || '', batchN = prev.batchN || 0;
         if (begin) { const b = batchFromDate(begin); if (b) { batch = b.label; batchN = b.n; } }
-        const m = { id: (u && u.id) || 0, level, batch, batchN, begin, t: now };
+        const st = u['staff?'] ? 'Staff' : (pisc ? 'Pisciner' : u['alumni?'] ? 'Alumni' : (u.blackholed_at && Date.parse(u.blackholed_at) < Date.now() && !u['active?']) ? 'Blackholed' : u['active?'] ? 'Active' : 'Freezing');
+        const img = (u.image && u.image.versions && u.image.versions.medium) || u.image_url || prev.img || '';
+        const m = { id: (u && u.id) || 0, level, batch, batchN, begin, st, img, t: now };
         try { const cc = readMetaCache(); cc[login] = m; localStorage.setItem(META_KEY, JSON.stringify(cc)); } catch (_) {}
         return m;
       } catch (e) { console.warn('[bkk42] user meta failed', login, String((e && e.message) || e)); }
@@ -195,7 +202,7 @@
     campusClusterCache.promise.set(id, p);
     return p;
   };
-  const ROSTER_CACHE_KEY = 'bkk42-campus-roster@3';
+  const ROSTER_CACHE_KEY = 'bkk42-campus-roster@4';
   const ROSTER_PAGE_SIZE = 100;
   const ROSTER_MAX_PAGES = 150;
   let lastSeedHits = 0;
@@ -214,23 +221,28 @@
     const slugs = ROSTER_SLUGS;
     const rows = new Map();
     let firstErr = '';
-    const putRow = (u) => {
-      if (!u || typeof u !== 'object' || u['staff?']) return;
+    const putRow = (u, slug) => {
+      if (!u || typeof u !== 'object') return;
       const user = (u.user && typeof u.user === 'object') ? u.user : null;
+      if (u['staff?'] || (user && user['staff?'])) return;
       const login = String((user && user.login) || u.login || '').toLowerCase();
       if (!/^[a-z0-9_-]{2,30}$/.test(login)) return;
       const begin = u.begin_at || u.created_at || '';
       const t = begin ? Date.parse(begin) : NaN;
       const level = u.level != null ? Number(u.level) : null;
       const uid = (user && user.id) || u.id || 0;
+      const src = user || u;
+      const mk = { id: uid, level, begin, pis: slug === 'c-piscine', act: !!src['active?'], alg: !!src['alumni?'], bh: u.blackholed_at || src.blackholed_at || '', img: (src.image && src.image.versions && src.image.versions.medium) || src.image_url || '' };
       const cur = rows.get(login);
-      if (!cur) { rows.set(login, { id: uid, level, begin }); return; }
+      if (!cur) { rows.set(login, mk); return; }
       const curT = cur.begin ? Date.parse(cur.begin) : NaN;
-      if (!isNaN(t) && (isNaN(curT) || t > curT)) rows.set(login, { id: uid || cur.id, level: level != null ? level : cur.level, begin });
-      else {
+      if (!isNaN(t) && (isNaN(curT) || t > curT)) {
+        rows.set(login, { id: uid || cur.id, level: level != null ? level : cur.level, begin, pis: mk.pis, act: mk.act, alg: mk.alg, bh: mk.bh || cur.bh, img: mk.img || cur.img });
+      } else {
         if (cur.level == null && level != null) cur.level = level;
         if (!cur.begin && begin) cur.begin = begin;
         if (!cur.id && uid) cur.id = uid;
+        if (!cur.img && mk.img) cur.img = mk.img;
       }
     };
     const progress = () => { if (typeof onPage === 'function') { try { onPage(rows.size); } catch (_) {} } };
@@ -244,7 +256,7 @@
           break;
         }
         if (!Array.isArray(d) || !d.length) break;
-        for (const u of d) putRow(u);
+        for (const u of d) putRow(u, slug);
         progress();
         if (d.length < ROSTER_PAGE_SIZE) break;
       }
@@ -258,9 +270,11 @@
         const prev = c[login] || {};
         const m = {
           id: s.id || prev.id || 0,
-          level: s.level != null ? s.level : (prev.level != null ? prev.level : null),
+          level: s.pis ? null : (s.level != null ? s.level : (prev.level != null ? prev.level : null)),
           batch: prev.batch || '', batchN: prev.batchN || 0,
           begin: s.begin || prev.begin || '',
+          st: statusOf(s),
+          img: s.img || prev.img || '',
           t: now,
         };
         if (m.begin && !m.batchN) { const b = batchFromDate(m.begin); if (b) { m.batch = b.label; m.batchN = b.n; } }
@@ -288,7 +302,7 @@
   };
   try { window.__bkk42RosterDebug = bkk42RosterDebug; } catch (_) {}
   try { if (typeof unsafeWindow !== 'undefined' && unsafeWindow) unsafeWindow.__bkk42RosterDebug = bkk42RosterDebug; } catch (_) {}
-  const installStyle = () => { document.getElementById(ID.style)?.remove(); const st = el('style'); st.id = ID.style; st.textContent = '.bkk42-root{--bg:#171a20;--panel:#20252e;--card:#292f3a;--seat:#353c49;--line:#3e4654;--muted:#9da7b6;--cyan:#00babc;--green:#55dca8;box-sizing:border-box;min-height:480px;padding:22px;background:var(--bg);color:#eef2f5;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}.bkk42-root *{box-sizing:border-box}.bkk42-root button{border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer}.bkk42-root button:hover{filter:brightness(1.1)}.bkk42-root button:disabled{cursor:wait;opacity:.6}.bkk42-root .primary,.bkk42-nav button.active{background:#009fa2}.bkk42-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.bkk42-root h2{margin:0;color:#fff;font-size:25px}.bkk42-note{margin-top:5px;color:var(--muted)}.bkk42-actions{display:flex;align-items:center;gap:10px}.bkk42-total{display:flex;align-items:baseline;gap:7px;padding:8px 14px;background:#213f37;border:1px solid #00d084;border-radius:8px;color:var(--green);font-size:12px;font-weight:850;text-transform:uppercase}.bkk42-total strong{font-size:21px;color:#70efbd}.bkk42-zones{display:grid;gap:22px}.bkk42-zone{padding:16px;background:var(--panel);border-radius:9px}.bkk42-zone h3{margin:0 0 14px;color:#fff}.bkk42-tables{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}.bkk42-table{padding:12px;background:var(--card);border:1px solid var(--line);border-radius:10px}.bkk42-table-title{text-align:center;margin-bottom:10px;color:#00c8cb;font-weight:850}.bkk42-chairs{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bkk42-seat{display:block;min-height:58px;padding:8px;overflow:hidden;background:var(--seat);border:2px solid transparent;border-radius:7px;color:#fff;text-decoration:none}.bkk42-seat:hover{border-color:var(--cyan);color:#fff}.bkk42-seat.friend{border-color:#00d084;background:#234137}.bkk42-seat.empty{background:#242933;color:#707987;pointer-events:none}.bkk42-seat img{float:left;width:36px;height:36px;margin-right:8px;border-radius:50%;object-fit:cover;background:#242933}.bkk42-host{display:block;font-size:11px;font-weight:850}.bkk42-login{display:block;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.bkk42-empty,.bkk42-error{padding:25px;text-align:center;background:#252a34;border-radius:7px;color:#9ba5b4}.bkk42-error{color:#ff9292}.bkk42-editor{display:none;margin-bottom:18px;padding:14px;background:var(--panel);border-radius:7px}.bkk42-editor.open{display:block}.bkk42-editor textarea{width:100%;min-height:105px;padding:11px;background:#2a303b;color:#fff;border:1px solid #4c5564;border-radius:5px;resize:vertical}.bkk42-editor-row{display:flex;align-items:center;gap:10px;margin-top:9px}.bkk42-hint{color:#929baa;font-size:12px}.bkk42-friends{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}.bkk42-card{display:flex;align-items:center;gap:12px;padding:13px;background:#252a34;border-left:4px solid #6b7280;border-radius:6px}.bkk42-card.online{border-left-color:#00d084}.bkk42-card img,.bkk42-avatar{flex:none;width:47px;height:47px;border-radius:50%;object-fit:cover;background:#3a404c}.bkk42-avatar{display:grid;place-items:center}.bkk42-card a{color:#fff;font-size:16px;font-weight:800;text-decoration:none}.bkk42-card a:hover{color:#00c8cb}.bkk42-status{margin-top:3px;color:#aab2c0;font-size:13px}.bkk42-card.online .bkk42-status{color:var(--green)}.bkk42-sub{margin-top:4px;font-size:11px;color:var(--muted)}.bkk42-seat .bkk42-sub{color:#c7d0dc}.bkk42-pill{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:20px;background:#343b48;font-size:11px;font-weight:800}.bkk42-rank{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;padding:9px 12px;background:#252a34;border-radius:7px}.bkk42-lv{color:var(--green);font-weight:850}.bkk42-seat>.bkk42-pill{margin:4px 0 0}#' + ID.modal + '{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;padding:20px;background:rgba(2,6,12,.84)}#' + ID.modal + '[hidden]{display:none}#' + ID.modal + ' .bkk42-shell{display:flex;flex-direction:column;width:min(1180px,97vw);height:min(820px,94vh);overflow:hidden;background:#171a20;border:1px solid #3d4552;border-radius:14px}#' + ID.modal + ' .bkk42-bar{display:flex;align-items:center;gap:22px;padding:13px 18px;background:#1d2129;border-bottom:1px solid #353c47;color:#fff}.bkk42-brand{font-size:20px;font-weight:850;white-space:nowrap}.bkk42-nav{display:flex;gap:8px;flex-wrap:wrap}.bkk42-nav button{border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer}.bkk42-close{margin-left:auto;border:0;background:transparent;color:#fff;font-size:29px;cursor:pointer}.bkk42-modal-body{flex:1;overflow:auto}.bkk42-view[hidden]{display:none}#bkk42-float{position:fixed;right:18px;bottom:18px;z-index:2147483000;width:54px;height:54px;border:0;border-radius:50%;background:#009fa2;color:#fff;font-size:17px;font-weight:850;cursor:pointer}@media(max-width:700px){.bkk42-head{flex-direction:column}.bkk42-tables{grid-template-columns:1fr}}'; document.head.appendChild(st); };
+  const installStyle = () => { document.getElementById(ID.style)?.remove(); const st = el('style'); st.id = ID.style; st.textContent = '.bkk42-root{--bg:#171a20;--panel:#20252e;--card:#292f3a;--seat:#353c49;--line:#3e4654;--muted:#9da7b6;--cyan:#00babc;--green:#55dca8;box-sizing:border-box;min-height:480px;padding:22px;background:var(--bg);color:#eef2f5;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}.bkk42-root *{box-sizing:border-box}.bkk42-root button{border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer}.bkk42-root button:hover{filter:brightness(1.1)}.bkk42-root button:disabled{cursor:wait;opacity:.6}.bkk42-root .primary,.bkk42-nav button.active{background:#009fa2}.bkk42-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.bkk42-root h2{margin:0;color:#fff;font-size:25px}.bkk42-note{margin-top:5px;color:var(--muted)}.bkk42-actions{display:flex;align-items:center;gap:10px}.bkk42-total{display:flex;align-items:baseline;gap:7px;padding:8px 14px;background:#213f37;border:1px solid #00d084;border-radius:8px;color:var(--green);font-size:12px;font-weight:850;text-transform:uppercase}.bkk42-total strong{font-size:21px;color:#70efbd}.bkk42-zones{display:grid;gap:22px}.bkk42-zone{padding:16px;background:var(--panel);border-radius:9px}.bkk42-zone h3{margin:0 0 14px;color:#fff}.bkk42-tables{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}.bkk42-table{padding:12px;background:var(--card);border:1px solid var(--line);border-radius:10px}.bkk42-table-title{text-align:center;margin-bottom:10px;color:#00c8cb;font-weight:850}.bkk42-chairs{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bkk42-seat{display:block;min-height:58px;padding:8px;overflow:hidden;background:var(--seat);border:2px solid transparent;border-radius:7px;color:#fff;text-decoration:none}.bkk42-seat:hover{border-color:var(--cyan);color:#fff}.bkk42-seat.friend{border-color:#00d084;background:#234137}.bkk42-seat.empty{background:#242933;color:#707987;pointer-events:none}.bkk42-seat img{float:left;width:36px;height:36px;margin-right:8px;border-radius:50%;object-fit:cover;background:#242933}.bkk42-host{display:block;font-size:11px;font-weight:850}.bkk42-login{display:block;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.bkk42-empty,.bkk42-error{padding:25px;text-align:center;background:#252a34;border-radius:7px;color:#9ba5b4}.bkk42-error{color:#ff9292}.bkk42-editor{display:none;margin-bottom:18px;padding:14px;background:var(--panel);border-radius:7px}.bkk42-editor.open{display:block}.bkk42-editor textarea{width:100%;min-height:105px;padding:11px;background:#2a303b;color:#fff;border:1px solid #4c5564;border-radius:5px;resize:vertical}.bkk42-editor-row{display:flex;align-items:center;gap:10px;margin-top:9px}.bkk42-hint{color:#929baa;font-size:12px}.bkk42-friends{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}.bkk42-card{display:flex;align-items:center;gap:12px;padding:13px;background:#252a34;border-left:4px solid #6b7280;border-radius:6px}.bkk42-card.online{border-left-color:#00d084}.bkk42-card img,.bkk42-avatar{flex:none;width:47px;height:47px;border-radius:50%;object-fit:cover;background:#3a404c}.bkk42-avatar{display:grid;place-items:center}.bkk42-card a{color:#fff;font-size:16px;font-weight:800;text-decoration:none}.bkk42-card a:hover{color:#00c8cb}.bkk42-status{margin-top:3px;color:#aab2c0;font-size:13px}.bkk42-card.online .bkk42-status{color:var(--green)}.bkk42-sub{margin-top:4px;font-size:11px;color:var(--muted)}.bkk42-seat .bkk42-sub{color:#c7d0dc}.bkk42-pill{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:20px;background:#343b48;font-size:11px;font-weight:800}.bkk42-rank{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;padding:9px 12px;background:#252a34;border-radius:7px}.bkk42-lv{color:var(--green);font-weight:850}.bkk42-seat>.bkk42-pill{margin:4px 0 0}#' + ID.modal + '{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;padding:20px;background:rgba(2,6,12,.84)}#' + ID.modal + '[hidden]{display:none}#' + ID.modal + ' .bkk42-shell{display:flex;flex-direction:column;width:min(1180px,97vw);height:min(820px,94vh);overflow:hidden;background:#171a20;border:1px solid #3d4552;border-radius:14px}#' + ID.modal + ' .bkk42-bar{display:flex;align-items:center;gap:22px;padding:13px 18px;background:#1d2129;border-bottom:1px solid #353c47;color:#fff}.bkk42-brand{font-size:20px;font-weight:850;white-space:nowrap}.bkk42-nav{display:flex;gap:8px;flex-wrap:wrap}.bkk42-nav button{border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer}.bkk42-close{margin-left:auto;border:0;background:transparent;color:#fff;font-size:29px;cursor:pointer}.bkk42-modal-body{flex:1;overflow:auto}.bkk42-view[hidden]{display:none}#bkk42-float{position:fixed;right:18px;bottom:18px;z-index:2147483000;width:54px;height:54px;border:0;border-radius:50%;background:#009fa2;color:#fff;font-size:17px;font-weight:850;cursor:pointer}@media(max-width:700px){.bkk42-head{flex-direction:column}.bkk42-tables{grid-template-columns:1fr}}.bkk42-rav{width:26px;height:26px;border-radius:50%;object-fit:cover;flex:none;background:#353c49}.bkk42-stc-active{color:#55dca8}.bkk42-stc-pisciner{color:#ffd166}.bkk42-stc-freezing{color:#6cb6ff}.bkk42-stc-blackholed{color:#ff6b6b}.bkk42-stc-alumni{color:#4dd0e1}.bkk42-stc-staff{color:#b388ff}.bkk42-stfilter{position:relative}.bkk42-stfilter summary{display:inline-block;list-style:none;border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer}.bkk42-stfilter summary::-webkit-details-marker{display:none}.bkk42-stfilter[open] summary{background:#009fa2}.bkk42-stpanel{position:absolute;top:calc(100% + 6px);left:0;z-index:30;display:grid;gap:6px;min-width:172px;padding:10px 12px;background:#20252e;border:1px solid #3e4654;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.4)}.bkk42-stopt{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}.bkk42-stopt input{accent-color:#009fa2}'; document.head.appendChild(st); };
   const makeHead = (t, n) => { const h = el('div', 'bkk42-head'); const ti = el('div'); ti.append(el('h2', '', t), el('div', 'bkk42-note', n)); const a = el('div', 'bkk42-actions'); h.append(ti, a); return { head: h, note: ti.lastElementChild, actions: a }; };
   const batchLabel = (m) => { const n = m && (m.batchN | 0); return n > 0 ? '#' + n : ''; };
   const paintBatchPill = (scopeEl, login, m) => {
@@ -326,7 +340,10 @@
             if (!card.isConnected) return;
             paintBatchPill(card, login, m);
             const det = card.querySelector('div');
-            if (m.level != null && det && card.classList.contains('bkk42-card') && !det.querySelector('.bkk42-lv')) det.appendChild(el('div', 'bkk42-lv', 'Lv ' + Number(m.level).toFixed(2)));
+            if (det && card.classList.contains('bkk42-card') && !det.querySelector('.bkk42-lv')) {
+              if (m.level != null) det.appendChild(el('div', 'bkk42-lv', 'Lv ' + Number(m.level).toFixed(2)));
+              else if (m.st && m.st !== 'Active') det.appendChild(el('div', 'bkk42-lv bkk42-stc-' + String(m.st).toLowerCase(), m.st));
+            }
           } catch (_) {}
         }));
         await new Promise((r) => setTimeout(r, 200));
@@ -336,7 +353,7 @@
     else setTimeout(() => { runQueue(); }, 1500);
   };
   const renderCluster = async (root, force) => { const myToken = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1)); const alive = () => root.isConnected && root.dataset.loadToken === myToken; root.className = 'bkk42-root'; root.replaceChildren(); const hh = makeHead('Bangkok TH', 'Loading live workstations...'); const total = el('div', 'bkk42-total'); const tn = el('strong', '', '--'); total.append(tn, document.createTextNode(' Online')); const ref = el('button', 'primary', 'Refresh'); ref.type = 'button'; ref.onclick = () => renderCluster(root, true); hh.actions.append(total, ref); root.appendChild(hh.head); try { ref.disabled = true; const locs = await getBangkok(force); if (!alive()) return; const fr = new Set(readFriends()); tn.textContent = String(locs.length); hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const zones = el('div', 'bkk42-zones'); for (let z = 1; z <= 3; z++) { const users = locs.filter((e) => String(e.host).toLowerCase().startsWith('z' + z + 't')); const zone = el('section', 'bkk42-zone'); zone.appendChild(el('h3', '', 'Zone ' + z + ' \u00B7 ' + users.length + ' online')); const tm = new Map(); for (const u of users) { const m2 = String(u.host).match(/^z\d+t(\d+)c(\d+)$/i); if (!m2) continue; const tb = Number(m2[1]); if (!tm.has(tb)) tm.set(tb, new Map()); tm.get(tb).set(Number(m2[2]), u); } if (!tm.size) zone.appendChild(el('div', 'bkk42-empty', 'No active tables')); else { const tables = el('div', 'bkk42-tables'); for (const tt of [...tm].sort((a, b) => a[0] - b[0])) { const table = el('div', 'bkk42-table'); table.appendChild(el('div', 'bkk42-table-title', 'Table T' + tt[0])); const grid = el('div', 'bkk42-chairs'); for (let ch = 1; ch <= 4; ch++) { const u = tt[1].get(ch); const login = u ? String(u.login).toLowerCase() : ''; const seat = el(u ? 'a' : 'div', 'bkk42-seat' + (u && fr.has(login) ? ' friend' : '') + (u ? '' : ' empty')); if (u) { seat.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login); if (u.cdn_uri) { const im = el('img'); im.src = String(u.cdn_uri); im.alt = ''; im.loading = 'lazy'; seat.appendChild(im); } } seat.append(el('span', 'bkk42-host', 'Z' + z + ' \u00B7 T' + tt[0] + ' \u00B7 C' + ch), el('span', 'bkk42-login', u ? login + (fr.has(login) ? ' \u2605' : '') : 'Empty')); if (u) { seat.appendChild(el('span', 'bkk42-sub', agoLabel(u.begin_at, login))); seat.appendChild(makeDotsButton(login)); seat.dataset.login = login; } grid.appendChild(seat); } table.appendChild(grid); tables.appendChild(table); } zone.appendChild(tables); } zones.appendChild(zone); } root.appendChild(zones); enrichCards(root); } catch (e) { if (alive()) { console.warn('[bkk42] cluster feed failed', String((e && e.message) || e)); hh.note.textContent = 'Live feed unavailable'; root.appendChild(el('div', 'bkk42-error', 'Could not load Bangkok cluster locations.')); } } finally { ref.disabled = false; } };
-  const hydrateFriendImages = async (grid) => { let cache = {}; try { cache = JSON.parse(localStorage.getItem(IMAGES_KEY) || '{}') || {}; } catch (_) {} for (const card of [...grid.querySelectorAll('.bkk42-card[data-login]')].slice(0, 30)) { if (!card.isConnected || card.querySelector('img')) continue; const login = card.dataset.login; let u2 = cache[login];       if (!u2 && readApiToken()) { try { const u = await apiV2('/users/' + encodeURIComponent(login)); const cand = (u && (u.image_url || (u.image && u.image.link))) || ''; if (cand) { u2 = String(cand); cache[login] = u2; localStorage.setItem(IMAGES_KEY, JSON.stringify(cache)); } } catch (_) {} } if (u2 && card.isConnected && !card.querySelector('img')) { const im = el('img'); im.src = u2; im.alt = ''; im.loading = 'lazy'; card.querySelector('.bkk42-avatar')?.replaceWith(im); } } };
+  const hydrateFriendImages = async (grid) => { let cache = {}; try { cache = JSON.parse(localStorage.getItem(IMAGES_KEY) || '{}') || {}; } catch (_) {} let mm = {}; try { mm = readMetaCache(); } catch (_) {} for (const card of [...grid.querySelectorAll('.bkk42-card[data-login]')].slice(0, 30)) { if (!card.isConnected || card.querySelector('img')) continue; const login = card.dataset.login; let u2 = cache[login] || (mm[login] && mm[login].img) || '';       if (!u2 && readApiToken()) { try { const u = await apiV2('/users/' + encodeURIComponent(login)); const cand = (u && (u.image_url || (u.image && u.image.link))) || ''; if (cand) { u2 = String(cand); cache[login] = u2; localStorage.setItem(IMAGES_KEY, JSON.stringify(cache)); } } catch (_) {} } if (u2 && card.isConnected && !card.querySelector('img')) { const im = el('img'); im.src = u2; im.alt = ''; im.loading = 'lazy'; card.querySelector('.bkk42-avatar')?.replaceWith(im); } } };
   const renderFriends = async (root, force, onCount) => { onCount = onCount || (() => {}); const myToken = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1)); const alive = () => root.isConnected && root.dataset.loadToken === myToken; root.className = 'bkk42-root'; root.replaceChildren(); const hh = makeHead('Friends \u00B7 all campuses', 'Checking live locations...'); const man = el('button', '', 'Manage list'); const ref = el('button', 'primary', 'Refresh'); hh.actions.append(man, ref); const ed = el('div', 'bkk42-editor'); const ta = el('textarea'); ta.placeholder = 'login1\nlogin2\nlogin3'; ta.value = readFriends().join('\n'); const row = el('div', 'bkk42-editor-row'); const sv = el('button', 'primary', 'Save list'); row.append(sv, el('span', 'bkk42-hint', 'Separate logins with spaces, commas, or new lines.')); ed.append(ta, row); const grid = el('div', 'bkk42-friends'); root.append(hh.head, ed, grid); man.onclick = () => { ed.classList.toggle('open'); if (ed.classList.contains('open')) ta.focus(); }; ref.onclick = () => renderFriends(root, true, onCount); sv.onclick = () => { writeFriends(parseLogins(ta.value)); renderFriends(root, false, onCount); }; let live = new Map(); try { ref.disabled = true; live = await getGlobalMap(force); if (!alive()) return; hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 all campuses'; } catch (e) { if (alive()) { console.warn('[bkk42] friends feed failed', String((e && e.message) || e)); hh.note.textContent = 'Live feed unavailable'; } } finally { ref.disabled = false; } if (!alive()) return; const fr = readFriends(); onCount(fr.filter((l) => live.has(l)).length, fr.length); if (!fr.length) grid.appendChild(el('div', 'bkk42-empty', 'No friends yet. Select Manage list to add 42 logins.')); for (const login of fr) { const loc = live.get(login); const card = el('div', 'bkk42-card' + (loc ? ' online' : '')); card.dataset.login = login; if (loc && loc.cdn_uri) { const im = el('img'); im.src = String(loc.cdn_uri); im.alt = ''; im.loading = 'lazy'; card.appendChild(im); } else card.appendChild(el('span', 'bkk42-avatar', '?')); const det = el('div'); const pf = el('a', '', login); pf.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login); const suf = loc && Number(loc.campus_id) !== BANGKOK_CAMPUS_ID ? ' \u00B7 campus ' + loc.campus_id : ''; det.append(pf, el('div', 'bkk42-status', loc ? 'Online \u00B7 ' + String(loc.host).toUpperCase() + suf : 'Offline')); det.appendChild(el('div', 'bkk42-sub', agoLabel(loc && loc.begin_at, login))); det.appendChild(makeDotsButton(login)); card.appendChild(det); grid.appendChild(card); } setTimeout(() => { if (grid.isConnected) hydrateFriendImages(grid); }, 2000); enrichCards(root); };
   const fmtHours = (h) => { if (h == null || !isFinite(h)) return '\u2014h'; const m = Math.round(h * 60); const hh = Math.floor(m / 60); if (hh < 1) return m + 'm'; return hh + 'h ' + (m % 60) + 'm'; };
   const getLog30d = async (login) => {
@@ -490,7 +507,8 @@
     const batch = opts.batch !== undefined ? String(opts.batch) : (root.dataset.batch || 'all');
     const limit = opts.limit !== undefined ? String(opts.limit) : (root.dataset.limit || 'all');
     const campus = opts.campus !== undefined ? String(opts.campus) : (root.dataset.campus || String(BANGKOK_CAMPUS_ID));
-    root.dataset.sortMode = mode; root.dataset.presence = presence; root.dataset.batch = batch; root.dataset.limit = limit; root.dataset.campus = campus;
+    const statuses = opts.status !== undefined ? String(opts.status) : (root.dataset.status || 'all');
+    root.dataset.sortMode = mode; root.dataset.presence = presence; root.dataset.batch = batch; root.dataset.limit = limit; root.dataset.campus = campus; root.dataset.status = statuses;
     const myToken = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1));
     const alive = () => root.isConnected && root.dataset.loadToken === myToken;
     root.className = 'bkk42-root'; root.replaceChildren();
@@ -502,9 +520,28 @@
     const batchSel = el('select'); batchSel.style.cssText = selCss;
     const limitSel = el('select'); limitSel.style.cssText = selCss;
     const campusSel = el('select'); campusSel.style.cssText = selCss;
+    const stBox = el('details', 'bkk42-stfilter');
+    stBox.open = root.dataset.statusesOpen === '1';
+    const stSet = new Set(statuses === 'all' ? STATUS_LIST : (statuses === 'none' ? [] : statuses.split(',')));
+    const stSum = el('summary', '', statuses === 'all' ? 'Status: all' : !stSet.size ? 'Status: none' : 'Status: ' + stSet.size + '/' + STATUS_LIST.length);
+    const stPanel = el('div', 'bkk42-stpanel');
+    for (const s of STATUS_LIST) {
+      const lab = el('label', 'bkk42-stopt');
+      const cb = el('input'); cb.type = 'checkbox'; cb.checked = stSet.has(s);
+      lab.append(cb, document.createTextNode(s));
+      cb.onchange = () => {
+        if (cb.checked) stSet.add(s); else stSet.delete(s);
+        const on = STATUS_LIST.filter((x) => stSet.has(x));
+        const v = !on.length ? 'none' : (on.length === STATUS_LIST.length ? 'all' : on.join(','));
+        renderTop(root, false, Object.assign(keep(), { status: v }));
+      };
+      stPanel.appendChild(lab);
+    }
+    stBox.append(stSum, stPanel);
+    stBox.addEventListener('toggle', () => { root.dataset.statusesOpen = stBox.open ? '1' : '0'; });
     const loadBtn = el('button', '', 'Load details'); loadBtn.type = 'button'; loadBtn.hidden = true;
     const stopBtn = el('button', '', 'Stop'); stopBtn.type = 'button'; stopBtn.hidden = true;
-    const keep = () => ({ mode, presence, batch: batchSel.value || 'all', limit: limitSel.value || 'all', campus: campusSel.value || String(BANGKOK_CAMPUS_ID) });
+    const keep = () => ({ mode, presence, batch: batchSel.value || 'all', limit: limitSel.value || 'all', campus: campusSel.value || String(BANGKOK_CAMPUS_ID), status: statuses });
     ref.onclick = () => renderTop(root, true, keep());
     sortBtn.onclick = () => renderTop(root, false, Object.assign(keep(), { mode: mode === 'level' ? 'active' : 'level' }));
     filtBtn.onclick = () => { const nx = presence === 'all' ? 'online' : presence === 'online' ? 'offline' : 'all'; renderTop(root, false, Object.assign(keep(), { presence: nx })); };
@@ -512,7 +549,7 @@
     limitSel.onchange = () => renderTop(root, false, keep());
     campusSel.onchange = () => renderTop(root, false, keep());
     stopBtn.onclick = () => { root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1); stopBtn.hidden = true; loadBtn.hidden = false; ref.disabled = false; };
-    hh.actions.append(sortBtn, filtBtn, campusSel, batchSel, limitSel, loadBtn, stopBtn, ref);
+    hh.actions.append(sortBtn, filtBtn, stBox, campusSel, batchSel, limitSel, loadBtn, stopBtn, ref);
     try { const vv = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || ''; if (vv) hh.actions.append(el('span', 'bkk42-hint', 'v' + vv)); } catch (_) {}
     root.appendChild(hh.head);
     const imp = el('div', 'bkk42-editor open');
@@ -553,6 +590,8 @@
     imp.append(ta, irow, trow, srow); root.appendChild(imp);
     const list = el('div', 'bkk42-zones'); root.appendChild(list);
     const passPresence = (m2) => presence === 'all' || (presence === 'online' ? !!m2.loc : !m2.loc);
+    const statusSet = statuses === 'all' ? null : new Set(statuses === 'none' ? [] : statuses.split(','));
+    const passStatus = (m2) => !statusSet || statusSet.has((m2.meta && m2.meta.st) || '');
     let seenSnap = readSeen();
     const passBatch = (m2) => { const bn = (m2.meta && m2.meta.batchN) || 0; if (batch === 'all') return true; if (batch === 'new') return !bn; return String(bn) === batch; };
     const sortMetas = (arr) => { if (mode === 'active') arr.sort((a, b) => (((b.log && b.log.hours) == null) ? -1 : b.log.hours) - (((a.log && a.log.hours) == null) ? -1 : a.log.hours)); else arr.sort((a, b) => ((b.meta.level == null ? -1 : b.meta.level) - (a.meta.level == null ? -1 : a.meta.level))); };
@@ -570,7 +609,7 @@
       seenSnap = readSeen();
       list.replaceChildren();
       const groups = new Map();
-      for (const m2 of metas) { if (!passPresence(m2) || !passBatch(m2)) continue; const key = (m2.meta && m2.meta.batchN) || 0; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(m2); }
+      for (const m2 of metas) { if (!passPresence(m2) || !passBatch(m2) || !passStatus(m2)) continue; const key = (m2.meta && m2.meta.batchN) || 0; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(m2); }
       for (const arr of groups.values()) sortMetas(arr);
       for (const k of [...groups.keys()].sort((a, b) => b - a)) {
         const arr = groups.get(k);
@@ -586,11 +625,22 @@
           lw.replaceChildren();
           arr.slice(0, lim).forEach((row, idx) => {
             const r = el('div', 'bkk42-rank');
-            const a = el('a', '', (idx + 1) + '. ' + row.login + (row.loc ? '' : ' \u00B7 off'));
-            a.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(row.login); a.style.color = '#fff';
+            const a = el('a');
+            a.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(row.login);
+            const av = (row.meta && row.meta.img) || '';
+            if (av) a.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;color:#fff';
+            else a.style.color = '#fff';
+            if (av) { const im = el('img', 'bkk42-rav'); im.src = av; im.alt = ''; im.loading = 'lazy'; a.appendChild(im); }
+            a.appendChild(document.createTextNode((idx + 1) + '. ' + row.login + (row.loc ? '' : ' · off')));
+            const st = (row.meta && row.meta.st) || '';
             const wrap = el('span');
-            if (mode === 'active') { const pre = (row.log && row.log.hours != null && row.log.approx) ? '~' : ''; wrap.append(el('span', 'bkk42-lv', pre + fmtHours(row.log ? row.log.hours : null) + ' \u00B7 30d'), el('div', 'bkk42-sub', (row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) + ' \u00B7 ' : '') + rowSub(row))); }
-            else wrap.append(el('span', 'bkk42-lv', row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) : 'Lv \u2022\u2022\u2022'), el('div', 'bkk42-sub', rowSub(row)));
+            if (mode === 'active') { const pre = (row.log && row.log.hours != null && row.log.approx) ? '~' : ''; const subPre = row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) + ' · ' : (st ? st + ' · ' : ''); wrap.append(el('span', 'bkk42-lv', pre + fmtHours(row.log ? row.log.hours : null) + ' · 30d'), el('div', 'bkk42-sub', subPre + rowSub(row))); }
+            else {
+              const lvText = row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) : (st || 'Lv •••');
+              const lvCls = 'bkk42-lv' + (row.meta.level == null && st ? ' bkk42-stc-' + String(st).toLowerCase() : '');
+              const stPre = st && row.meta.level != null && st !== 'Active' ? st + ' · ' : '';
+              wrap.append(el('span', lvCls, lvText), el('div', 'bkk42-sub', stPre + rowSub(row)));
+            }
             wrap.appendChild(makeDotsButton(row.login));
             r.append(el('b', '', '#' + (idx + 1)), a, wrap); lw.appendChild(r);
           });
@@ -661,16 +711,15 @@
         }, force), 120000);
         if (!alive()) return;
         if (extra && extra.length) {
-          const have = new Set(metas.map((m) => m.login));
           const snap = snapOf();
+          for (const m of metas) { const sm = snap[m.login]; if (sm) m.meta = sm; }
+          const have = new Set(metas.map((m) => m.login));
           let added = 0;
           for (const l of extra) {
             if (!have.has(l)) { have.add(l); metas.push({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }); added++; }
           }
-          if (added) {
-            scopeNote += ' · full roster (' + (lastRosterFresh ? lastSeedHits + ' levels' : 'cached') + ')';
-            fillBatches(metas); drawList(metas);
-          }
+          if (added) scopeNote += ' · full roster (' + (lastRosterFresh ? lastSeedHits + ' levels' : 'cached') + ')';
+          fillBatches(metas); drawList(metas);
         }
       } catch (e) { scopeNote += ' · roster failed (' + String((e && e.message) || e || 'error') + ')'; }
     }
