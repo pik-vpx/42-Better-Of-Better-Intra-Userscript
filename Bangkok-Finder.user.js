@@ -14,8 +14,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.3.1
-// @changelog    Campus-tagged seen history so Bangkok board no longer shows other campuses.
+// @version      2.4.0
+// @changelog    Full campus roster via API token — leaderboard loads the whole student body.
 // ==/UserScript==
 
 
@@ -135,6 +135,48 @@
     }).finally(() => { campusClusterCache.promise.delete(id); });
     campusClusterCache.promise.set(id, p);
     return p;
+  };
+  const ROSTER_CACHE_KEY = 'bkk42-campus-roster';
+  const loadCampusRoster = async (id) => {
+    id = Number(id);
+    let rc = {};
+    try { rc = JSON.parse(localStorage.getItem(ROSTER_CACHE_KEY) || '{}') || {}; } catch (_) {}
+    if (rc[id] && Date.now() - (rc[id].t || 0) < 86400000 && Array.isArray(rc[id].logins)) return rc[id].logins;
+    if (!readApiToken()) return null;
+    const logins = []; const seeds = [];
+    for (let page = 1; page <= 20; page++) {
+      let d = null;
+      try { d = await withTimeout(apiV2('/campus/' + id + '/users?page[size]=100&page[number]=' + page), 15000); }
+      catch (_) { break; }
+      if (!Array.isArray(d) || !d.length) break;
+      for (const u of d) {
+        const login = String((u && u.login) || '').toLowerCase();
+        if (!login || (u && u['staff?'])) continue;
+        logins.push(login); seeds.push(u);
+      }
+      if (d.length < 100) break;
+    }
+    try {
+      const c = readMetaCache(); const now = Date.now(); let ch = false;
+      for (const u of seeds) {
+        const login = String(u.login).toLowerCase();
+        const cus = Array.isArray(u.cursus_users) ? u.cursus_users : [];
+        const main = cus.find((e) => e && e.cursus && e.cursus.slug === '42cursus') || null;
+        const prev = c[login] || {};
+        const m = {
+          id: u.id || prev.id || 0,
+          level: main && main.level != null ? Number(main.level) : (prev.level != null ? prev.level : null),
+          batch: prev.batch || '', batchN: prev.batchN || 0,
+          begin: (main && (main.begin_at || main.created_at)) || prev.begin || '',
+          t: now,
+        };
+        if (m.begin && !m.batchN) { const b = batchFromDate(m.begin); if (b) { m.batch = b.label; m.batchN = b.n; } }
+        c[login] = m; ch = true;
+      }
+      if (ch) localStorage.setItem(META_KEY, JSON.stringify(c));
+    } catch (_) {}
+    try { rc[id] = { t: Date.now(), logins }; localStorage.setItem(ROSTER_CACHE_KEY, JSON.stringify(rc)); } catch (_) {}
+    return logins;
   };
   const installStyle = () => { document.getElementById(ID.style)?.remove(); const st = el('style'); st.id = ID.style; st.textContent = '.bkk42-root{--bg:#171a20;--panel:#20252e;--card:#292f3a;--seat:#353c49;--line:#3e4654;--muted:#9da7b6;--cyan:#00babc;--green:#55dca8;box-sizing:border-box;min-height:480px;padding:22px;background:var(--bg);color:#eef2f5;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}.bkk42-root *{box-sizing:border-box}.bkk42-root button{border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer}.bkk42-root button:hover{filter:brightness(1.1)}.bkk42-root button:disabled{cursor:wait;opacity:.6}.bkk42-root .primary,.bkk42-nav button.active{background:#009fa2}.bkk42-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.bkk42-root h2{margin:0;color:#fff;font-size:25px}.bkk42-note{margin-top:5px;color:var(--muted)}.bkk42-actions{display:flex;align-items:center;gap:10px}.bkk42-total{display:flex;align-items:baseline;gap:7px;padding:8px 14px;background:#213f37;border:1px solid #00d084;border-radius:8px;color:var(--green);font-size:12px;font-weight:850;text-transform:uppercase}.bkk42-total strong{font-size:21px;color:#70efbd}.bkk42-zones{display:grid;gap:22px}.bkk42-zone{padding:16px;background:var(--panel);border-radius:9px}.bkk42-zone h3{margin:0 0 14px;color:#fff}.bkk42-tables{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}.bkk42-table{padding:12px;background:var(--card);border:1px solid var(--line);border-radius:10px}.bkk42-table-title{text-align:center;margin-bottom:10px;color:#00c8cb;font-weight:850}.bkk42-chairs{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bkk42-seat{display:block;min-height:58px;padding:8px;overflow:hidden;background:var(--seat);border:2px solid transparent;border-radius:7px;color:#fff;text-decoration:none}.bkk42-seat:hover{border-color:var(--cyan);color:#fff}.bkk42-seat.friend{border-color:#00d084;background:#234137}.bkk42-seat.empty{background:#242933;color:#707987;pointer-events:none}.bkk42-seat img{float:left;width:36px;height:36px;margin-right:8px;border-radius:50%;object-fit:cover;background:#242933}.bkk42-host{display:block;font-size:11px;font-weight:850}.bkk42-login{display:block;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.bkk42-empty,.bkk42-error{padding:25px;text-align:center;background:#252a34;border-radius:7px;color:#9ba5b4}.bkk42-error{color:#ff9292}.bkk42-editor{display:none;margin-bottom:18px;padding:14px;background:var(--panel);border-radius:7px}.bkk42-editor.open{display:block}.bkk42-editor textarea{width:100%;min-height:105px;padding:11px;background:#2a303b;color:#fff;border:1px solid #4c5564;border-radius:5px;resize:vertical}.bkk42-editor-row{display:flex;align-items:center;gap:10px;margin-top:9px}.bkk42-hint{color:#929baa;font-size:12px}.bkk42-friends{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}.bkk42-card{display:flex;align-items:center;gap:12px;padding:13px;background:#252a34;border-left:4px solid #6b7280;border-radius:6px}.bkk42-card.online{border-left-color:#00d084}.bkk42-card img,.bkk42-avatar{flex:none;width:47px;height:47px;border-radius:50%;object-fit:cover;background:#3a404c}.bkk42-avatar{display:grid;place-items:center}.bkk42-card a{color:#fff;font-size:16px;font-weight:800;text-decoration:none}.bkk42-card a:hover{color:#00c8cb}.bkk42-status{margin-top:3px;color:#aab2c0;font-size:13px}.bkk42-card.online .bkk42-status{color:var(--green)}.bkk42-sub{margin-top:4px;font-size:11px;color:var(--muted)}.bkk42-seat .bkk42-sub{color:#c7d0dc}.bkk42-pill{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:20px;background:#343b48;font-size:11px;font-weight:800}.bkk42-rank{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;padding:9px 12px;background:#252a34;border-radius:7px}.bkk42-lv{color:var(--green);font-weight:850}.bkk42-seat>.bkk42-pill{margin:4px 0 0}#' + ID.modal + '{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;padding:20px;background:rgba(2,6,12,.84)}#' + ID.modal + '[hidden]{display:none}#' + ID.modal + ' .bkk42-shell{display:flex;flex-direction:column;width:min(1180px,97vw);height:min(820px,94vh);overflow:hidden;background:#171a20;border:1px solid #3d4552;border-radius:14px}#' + ID.modal + ' .bkk42-bar{display:flex;align-items:center;gap:22px;padding:13px 18px;background:#1d2129;border-bottom:1px solid #353c47;color:#fff}.bkk42-brand{font-size:20px;font-weight:850;white-space:nowrap}.bkk42-nav{display:flex;gap:8px;flex-wrap:wrap}.bkk42-nav button{border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer}.bkk42-close{margin-left:auto;border:0;background:transparent;color:#fff;font-size:29px;cursor:pointer}.bkk42-modal-body{flex:1;overflow:auto}.bkk42-view[hidden]{display:none}#bkk42-float{position:fixed;right:18px;bottom:18px;z-index:2147483000;width:54px;height:54px;border:0;border-radius:50%;background:#009fa2;color:#fff;font-size:17px;font-weight:850;cursor:pointer}@media(max-width:700px){.bkk42-head{flex-direction:column}.bkk42-tables{grid-template-columns:1fr}}'; document.head.appendChild(st); };
   const makeHead = (t, n) => { const h = el('div', 'bkk42-head'); const ti = el('div'); ti.append(el('h2', '', t), el('div', 'bkk42-note', n)); const a = el('div', 'bkk42-actions'); h.append(ti, a); return { head: h, note: ti.lastElementChild, actions: a }; };
@@ -336,16 +378,29 @@
     catch (_) { hh.note.textContent = 'Live feed unavailable \u00B7 showing cached'; }
     if (!alive()) return;
     const online = new Map(locs.map((e) => [String(e.login).toLowerCase(), e]));
-    const roster = buildRoster([...online.keys()]);
+    let roster = buildRoster([...online.keys()]);
+    const fullSet = new Set();
+    if (campus !== 'all' && readApiToken()) {
+      hh.note.textContent = 'Loading full campus roster...';
+      try {
+        const full = await withTimeout(loadCampusRoster(Number(campus)), 90000);
+        if (!alive()) return;
+        if (full && full.length) {
+          for (const l of full) fullSet.add(l);
+          roster = [...new Set(roster.concat(full))];
+          scopeNote += ' · full roster';
+        }
+      } catch (_) {}
+    }
     const snap = readMetaCache();
     let metas = roster.map((l) => ({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }));
     const frSet = new Set(readFriends().concat(readRosterExtra()));
     if (campus === 'all') { /* keep everyone */ }
     else if (Number(campus) === BANGKOK_CAMPUS_ID) {
       const sv = readSeen();
-      metas = metas.filter((m) => m.loc || frSet.has(m.login) || seenCampus(sv[m.login]) === BANGKOK_CAMPUS_ID);
+      metas = metas.filter((m) => m.loc || frSet.has(m.login) || fullSet.has(m.login) || seenCampus(sv[m.login]) === BANGKOK_CAMPUS_ID);
     } else {
-      metas = metas.filter((m) => m.loc || frSet.has(m.login));
+      metas = metas.filter((m) => m.loc || frSet.has(m.login) || fullSet.has(m.login));
     }
     const isFresh = (m2) => !!(m2.meta && (m2.meta.batchN || m2.meta.level != null));
     fillBatches(metas); fillLimits(); fillCampus(readCampusNames()); drawList(metas);
@@ -395,6 +450,7 @@
     const missing = pending().length;
     if (missing) { loadBtn.textContent = 'Load details (' + missing + ' new)'; loadBtn.hidden = false; }
     stampDone(metas.length);
+    if (campus !== 'all' && !readApiToken()) hh.note.textContent += ' · paste API token for full roster';
   };
   const createModal = () => { const ex = document.getElementById(ID.modal); if (ex && ex.openView) return ex; if (ex) ex.remove(); const mo = el('div'); mo.id = ID.modal; mo.hidden = true; const sh = el('section', 'bkk42-shell'); const bar = el('header', 'bkk42-bar'); const nv = el('nav', 'bkk42-nav'); const cb = el('button', 'active', 'Bangkok TH'); cb.type = 'button'; const fb = el('button', '', 'Friends'); fb.type = 'button'; const tb = el('button', '', 'Leaderboard'); tb.type = 'button'; const cl = el('button', 'bkk42-close', '\u00D7'); cl.type = 'button'; cl.setAttribute('aria-label', 'Close'); nv.append(cb, fb, tb); bar.append(el('div', 'bkk42-brand', '42 Bangkok'), nv, cl); const body = el('main', 'bkk42-modal-body'); const cv = el('section', 'bkk42-view'); const fv2 = el('section', 'bkk42-view'); fv2.hidden = true; const tv = el('section', 'bkk42-view'); tv.hidden = true; body.append(cv, fv2, tv); sh.append(bar, body); mo.appendChild(sh); document.body.appendChild(mo); const show = (n) => { cb.classList.toggle('active', n === 'cluster'); fb.classList.toggle('active', n === 'friends'); tb.classList.toggle('active', n === 'top'); cv.hidden = n !== 'cluster'; fv2.hidden = n !== 'friends'; tv.hidden = n !== 'top'; if (n === 'friends') renderFriends(fv2, false, (o, t2) => { fb.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); }); else if (n === 'top') renderTop(tv, false); else renderCluster(cv); }; cb.onclick = () => show('cluster'); fb.onclick = () => show('friends'); tb.onclick = () => show('top'); cl.onclick = () => { mo.hidden = true; }; mo.addEventListener('click', (e) => { if (e.target === mo) mo.hidden = true; }); mo.openView = (n) => { mo.hidden = false; show(n); }; return mo; };
   const mountMeta = () => { const done = document.getElementById(ID.clusterTab)?.isConnected && document.getElementById(ID.clusterPane)?.isConnected && document.getElementById(ID.friendsTab)?.isConnected && document.getElementById(ID.friendsPane)?.isConnected && document.getElementById(ID.topTab)?.isConnected && document.getElementById(ID.topPane)?.isConnected; if (done) return true; const nv = document.querySelector('#main-container'); const ct = document.querySelector('#cluster-map .tab-content'); if (!nv || !ct) return false; [ID.clusterTab, ID.friendsTab, ID.topTab, ID.clusterPane, ID.friendsPane, ID.topPane, 'bi-friends-style'].forEach((id) => document.getElementById(id)?.remove()); const add = (tid, pid, label, render) => { const it = el('li'); it.id = tid; it.setAttribute('role', 'presentation'); const lk = el('a', '', label); lk.href = '#' + pid; lk.dataset.toggle = 'tab'; lk.setAttribute('role', 'tab'); const pn = el('div', 'tab-pane'); pn.id = pid; pn.setAttribute('role', 'tabpanel'); lk.addEventListener('click', () => render(pn)); it.appendChild(lk); nv.insertBefore(it, document.getElementById('cluster-shadow-host') || null); ct.appendChild(pn); return { link: lk, pane: pn }; }; add(ID.clusterTab, ID.clusterPane, 'Bangkok TH', (p) => renderCluster(p)); const fr2 = add(ID.friendsTab, ID.friendsPane, 'Friends', (p) => renderFriends(p, false, (o, t2) => { fr2.link.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); })); add(ID.topTab, ID.topPane, 'Leaderboard', (p) => renderTop(p)); return true; };

@@ -26,7 +26,7 @@ auto-updates itself. touch grass, not settings.
 
 - friends → **manage list**: dump logins in, separated however. it figures it out
 - leaderboard → **save roster**: paste your whole promo once, rank everybody including the ghosts
-- leaderboard → **api token** (optional): paste a 42 api token to unlock official v2 data — faster levels, real stats, full campus list. without it, session mode still works fine. steal yours from peerfinder:
+- leaderboard → **api token**: paste a 42 api token and the board loads the **whole campus roster** (levels seeded in one go), not just friends + online. steal yours from peerfinder:
   1. open your [peerfinder](https://peerfinder.org/online) tab (log in if needed)
   2. `F12` → **console**
   3. run `localStorage.getItem("token")` (or `"refresh_token"`)
