@@ -8,7 +8,7 @@ A Tampermonkey userscript that adds a live **Bangkok TH cluster map**, a cross-c
 
 - **Bangkok TH tab** — live Zone/Table/Chair map of campus 33, total online counter, friend seats highlighted, relative login time (`2h 14m`), batch badges (`login #9`)
 - **Friends tab** — track any 42 logins across all campuses, online host + offline `seen X ago`, avatars, per-card level
-- **Top tab** — per-batch leaderboard (online + offline), sorted **Level** or **Active 30d** high → low, `All | Online | Offline` filter, paste-a-promo roster import
+- **Leaderboard tab** — per-batch ranking (online + offline) with campus selector (Bangkok default, All, each campus), batch filter, Load 10 → all cap, sorted **Level** or **Active 30d** high → low, `All | Online | Offline` filter, paste-a-promo roster import
 - **profile-v3 support** — floating `TH` button + modal that survives SPA navigation, `Esc` to close
 
 ## Install
@@ -17,14 +17,15 @@ A Tampermonkey userscript that adds a live **Bangkok TH cluster map**, a cross-c
 2. Install [Better Intra](https://betterintra.com/).
 3. Click the script file below and hit **Raw → Install**:
    - [`Bangkok-Finder.user.js`](./Bangkok-Finder.user.js)
-4. Open https://meta.intra.42.fr/clusters — new `Bangkok TH`, `Friends`, and `Top` tabs appear. On profile pages use the floating `TH` button.
+4. Open https://meta.intra.42.fr/clusters — new `Bangkok TH`, `Friends`, and `Leaderboard` tabs appear. On profile pages use the floating `TH` button.
 
 Updates are automatic via `@updateURL` — Tampermonkey checks the raw file on GitHub.
 
 ## Usage tips
 
 - **Friends → Manage list**: paste logins separated by spaces, commas, or new lines, then Save.
-- **Top → Save roster**: paste a full promo list once to rank offline students too (stored locally, nothing leaves your browser).
+- **Leaderboard → campus dropdown**: stays on Bangkok by default; pick another campus or All — just like peerfinder's online page.
+- **Leaderboard → Save roster**: paste a full promo list once to rank offline students too (stored locally, nothing leaves your browser).
 - All caches (levels, batches, seen-times) live in `localStorage`; UI paints instantly and enriches in the background.
 
 ## Fork & contribute

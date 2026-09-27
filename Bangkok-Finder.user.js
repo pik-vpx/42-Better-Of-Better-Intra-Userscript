@@ -13,8 +13,8 @@
 // @connect      pace-system.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.2.2
-// @changelog    Leaderboard tab with batch selector, on-demand loading, stats timeout and instant cache render.
+// @version      2.2.3
+// @changelog    Leaderboard campus selector (Bangkok default, All, each campus) and Load 10/25/50/100/200/all.
 // ==/UserScript==
 
 
@@ -50,6 +50,45 @@
   const requestJSON = async (url) => { if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, responseType: 'json', withCredentials: true, timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) })); const r = await fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
   const getBangkok = async (force) => { if (!force && bangkokCache.data.length && Date.now() - bangkokCache.time < 60000) return bangkokCache.data; if (bangkokCache.promise) return bangkokCache.promise; bangkokCache.promise = requestJSON(CLUSTER_URL).then((data) => { bangkokCache.data = Array.isArray(data) ? data.filter((e) => e && !e.end_at && e.login && e.host) : []; bangkokCache.time = Date.now(); recordSeen(bangkokCache.data); return bangkokCache.data; }).finally(() => { bangkokCache.promise = null; }); return bangkokCache.promise; };
   const getGlobalMap = async (force) => { if (!force && globalCache.map.size && Date.now() - globalCache.time < 60000) return globalCache.map; if (globalCache.promise) return globalCache.promise; globalCache.promise = (async () => { const urls = [CLUSTER_URL].concat(ACTIVE_CAMPUSES.filter((id) => id !== BANGKOK_CAMPUS_ID).map((id) => CLUSTER_URL + '?campus_id=' + id)); const settled = await Promise.all(urls.map(async (u) => { try { const d = await requestJSON(u); return Array.isArray(d) ? d.filter((e) => e && !e.end_at && e.login && e.host) : []; } catch (_) { return []; } })); const map = new Map(); for (const e of settled.flat()) map.set(String(e.login).toLowerCase(), e); recordSeen([...map.values()]); globalCache.map = map; globalCache.time = Date.now(); return map; })().finally(() => { globalCache.promise = null; }); return globalCache.promise; };
+  const CAMPUS_NAMES_KEY = 'bkk42-campus-names';
+  const campusNameCache = { map: null, promise: null };
+  const readCampusNames = () => { try { return JSON.parse(localStorage.getItem(CAMPUS_NAMES_KEY) || '{}') || {}; } catch (_) { return {}; } };
+  const loadCampusNames = () => {
+    if (campusNameCache.map) return Promise.resolve(campusNameCache.map);
+    if (campusNameCache.promise) return campusNameCache.promise;
+    const cached = readCampusNames();
+    cached[BANGKOK_CAMPUS_ID] = 'Bangkok';
+    campusNameCache.map = cached;
+    campusNameCache.promise = (async () => {
+      try {
+        const d = await authedJSON('https://intrapy.intra.42.fr/api/v1/campus');
+        const arr = Array.isArray(d) ? d : ((d && (d.data || d.campuses || d.items)) || []);
+        for (const c of (Array.isArray(arr) ? arr : [])) {
+          const id = Number(c && (c.id || c.campus_id));
+          const nm = c && (c.name || c.display_name || c.city || c.title);
+          if (id && nm) cached[id] = String(nm);
+        }
+        try { localStorage.setItem(CAMPUS_NAMES_KEY, JSON.stringify(cached)); } catch (_) {}
+      } catch (_) {}
+      return cached;
+    })().finally(() => { campusNameCache.promise = null; });
+    return campusNameCache.promise;
+  };
+  const campusClusterCache = { time: new Map(), data: new Map(), promise: new Map() };
+  const getCampusCluster = async (id, force) => {
+    id = Number(id);
+    const t = campusClusterCache.time.get(id) || 0;
+    if (!force && campusClusterCache.data.has(id) && Date.now() - t < 60000) return campusClusterCache.data.get(id);
+    if (campusClusterCache.promise.has(id)) return campusClusterCache.promise.get(id);
+    const p = requestJSON(CLUSTER_URL + '?campus_id=' + id).then((data) => {
+      const rows = Array.isArray(data) ? data.filter((e) => e && !e.end_at && e.login && e.host) : [];
+      campusClusterCache.data.set(id, rows); campusClusterCache.time.set(id, Date.now());
+      recordSeen(rows);
+      return rows;
+    }).finally(() => { campusClusterCache.promise.delete(id); });
+    campusClusterCache.promise.set(id, p);
+    return p;
+  };
   const installStyle = () => { document.getElementById(ID.style)?.remove(); const st = el('style'); st.id = ID.style; st.textContent = '.bkk42-root{--bg:#171a20;--panel:#20252e;--card:#292f3a;--seat:#353c49;--line:#3e4654;--muted:#9da7b6;--cyan:#00babc;--green:#55dca8;box-sizing:border-box;min-height:480px;padding:22px;background:var(--bg);color:#eef2f5;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}.bkk42-root *{box-sizing:border-box}.bkk42-root button{border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer}.bkk42-root button:hover{filter:brightness(1.1)}.bkk42-root button:disabled{cursor:wait;opacity:.6}.bkk42-root .primary,.bkk42-nav button.active{background:#009fa2}.bkk42-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.bkk42-root h2{margin:0;color:#fff;font-size:25px}.bkk42-note{margin-top:5px;color:var(--muted)}.bkk42-actions{display:flex;align-items:center;gap:10px}.bkk42-total{display:flex;align-items:baseline;gap:7px;padding:8px 14px;background:#213f37;border:1px solid #00d084;border-radius:8px;color:var(--green);font-size:12px;font-weight:850;text-transform:uppercase}.bkk42-total strong{font-size:21px;color:#70efbd}.bkk42-zones{display:grid;gap:22px}.bkk42-zone{padding:16px;background:var(--panel);border-radius:9px}.bkk42-zone h3{margin:0 0 14px;color:#fff}.bkk42-tables{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}.bkk42-table{padding:12px;background:var(--card);border:1px solid var(--line);border-radius:10px}.bkk42-table-title{text-align:center;margin-bottom:10px;color:#00c8cb;font-weight:850}.bkk42-chairs{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bkk42-seat{display:block;min-height:58px;padding:8px;overflow:hidden;background:var(--seat);border:2px solid transparent;border-radius:7px;color:#fff;text-decoration:none}.bkk42-seat:hover{border-color:var(--cyan);color:#fff}.bkk42-seat.friend{border-color:#00d084;background:#234137}.bkk42-seat.empty{background:#242933;color:#707987;pointer-events:none}.bkk42-seat img{float:left;width:36px;height:36px;margin-right:8px;border-radius:50%;object-fit:cover;background:#242933}.bkk42-host{display:block;font-size:11px;font-weight:850}.bkk42-login{display:block;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.bkk42-empty,.bkk42-error{padding:25px;text-align:center;background:#252a34;border-radius:7px;color:#9ba5b4}.bkk42-error{color:#ff9292}.bkk42-editor{display:none;margin-bottom:18px;padding:14px;background:var(--panel);border-radius:7px}.bkk42-editor.open{display:block}.bkk42-editor textarea{width:100%;min-height:105px;padding:11px;background:#2a303b;color:#fff;border:1px solid #4c5564;border-radius:5px;resize:vertical}.bkk42-editor-row{display:flex;align-items:center;gap:10px;margin-top:9px}.bkk42-hint{color:#929baa;font-size:12px}.bkk42-friends{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}.bkk42-card{display:flex;align-items:center;gap:12px;padding:13px;background:#252a34;border-left:4px solid #6b7280;border-radius:6px}.bkk42-card.online{border-left-color:#00d084}.bkk42-card img,.bkk42-avatar{flex:none;width:47px;height:47px;border-radius:50%;object-fit:cover;background:#3a404c}.bkk42-avatar{display:grid;place-items:center}.bkk42-card a{color:#fff;font-size:16px;font-weight:800;text-decoration:none}.bkk42-card a:hover{color:#00c8cb}.bkk42-status{margin-top:3px;color:#aab2c0;font-size:13px}.bkk42-card.online .bkk42-status{color:var(--green)}.bkk42-sub{margin-top:4px;font-size:11px;color:var(--muted)}.bkk42-seat .bkk42-sub{color:#c7d0dc}.bkk42-pill{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:20px;background:#343b48;font-size:11px;font-weight:800}.bkk42-rank{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;padding:9px 12px;background:#252a34;border-radius:7px}.bkk42-lv{color:var(--green);font-weight:850}.bkk42-seat>.bkk42-pill{margin:4px 0 0}#' + ID.modal + '{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;padding:20px;background:rgba(2,6,12,.84)}#' + ID.modal + '[hidden]{display:none}#' + ID.modal + ' .bkk42-shell{display:flex;flex-direction:column;width:min(1180px,97vw);height:min(820px,94vh);overflow:hidden;background:#171a20;border:1px solid #3d4552;border-radius:14px}#' + ID.modal + ' .bkk42-bar{display:flex;align-items:center;gap:22px;padding:13px 18px;background:#1d2129;border-bottom:1px solid #353c47;color:#fff}.bkk42-brand{font-size:20px;font-weight:850;white-space:nowrap}.bkk42-nav{display:flex;gap:8px;flex-wrap:wrap}.bkk42-nav button{border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer}.bkk42-close{margin-left:auto;border:0;background:transparent;color:#fff;font-size:29px;cursor:pointer}.bkk42-modal-body{flex:1;overflow:auto}.bkk42-view[hidden]{display:none}#bkk42-float{position:fixed;right:18px;bottom:18px;z-index:2147483000;width:54px;height:54px;border:0;border-radius:50%;background:#009fa2;color:#fff;font-size:17px;font-weight:850;cursor:pointer}@media(max-width:700px){.bkk42-head{flex-direction:column}.bkk42-tables{grid-template-columns:1fr}}'; document.head.appendChild(st); };
   const makeHead = (t, n) => { const h = el('div', 'bkk42-head'); const ti = el('div'); ti.append(el('h2', '', t), el('div', 'bkk42-note', n)); const a = el('div', 'bkk42-actions'); h.append(ti, a); return { head: h, note: ti.lastElementChild, actions: a }; };
   const batchLabel = (m) => { const n = m && (m.batchN | 0); return n > 0 ? '#' + n : ''; };
@@ -132,7 +171,8 @@
     const presence = opts.presence || root.dataset.presence || 'all';
     const batch = opts.batch !== undefined ? String(opts.batch) : (root.dataset.batch || 'all');
     const limit = opts.limit !== undefined ? String(opts.limit) : (root.dataset.limit || 'all');
-    root.dataset.sortMode = mode; root.dataset.presence = presence; root.dataset.batch = batch; root.dataset.limit = limit;
+    const campus = opts.campus !== undefined ? String(opts.campus) : (root.dataset.campus || String(BANGKOK_CAMPUS_ID));
+    root.dataset.sortMode = mode; root.dataset.presence = presence; root.dataset.batch = batch; root.dataset.limit = limit; root.dataset.campus = campus;
     const myToken = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1));
     const alive = () => root.isConnected && root.dataset.loadToken === myToken;
     root.className = 'bkk42-root'; root.replaceChildren();
@@ -143,16 +183,18 @@
     const selCss = 'border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer';
     const batchSel = el('select'); batchSel.style.cssText = selCss;
     const limitSel = el('select'); limitSel.style.cssText = selCss;
+    const campusSel = el('select'); campusSel.style.cssText = selCss;
     const loadBtn = el('button', '', 'Load details'); loadBtn.type = 'button'; loadBtn.hidden = true;
     const stopBtn = el('button', '', 'Stop'); stopBtn.type = 'button'; stopBtn.hidden = true;
-    const keep = () => ({ mode, presence, batch: batchSel.value || 'all', limit: limitSel.value || 'all' });
+    const keep = () => ({ mode, presence, batch: batchSel.value || 'all', limit: limitSel.value || 'all', campus: campusSel.value || String(BANGKOK_CAMPUS_ID) });
     ref.onclick = () => renderTop(root, true, keep());
     sortBtn.onclick = () => renderTop(root, false, Object.assign(keep(), { mode: mode === 'level' ? 'active' : 'level' }));
     filtBtn.onclick = () => { const nx = presence === 'all' ? 'online' : presence === 'online' ? 'offline' : 'all'; renderTop(root, false, Object.assign(keep(), { presence: nx })); };
     batchSel.onchange = () => renderTop(root, false, keep());
     limitSel.onchange = () => renderTop(root, false, keep());
+    campusSel.onchange = () => renderTop(root, false, keep());
     stopBtn.onclick = () => { root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1); stopBtn.hidden = true; loadBtn.hidden = false; ref.disabled = false; };
-    hh.actions.append(sortBtn, filtBtn, batchSel, limitSel, loadBtn, stopBtn, ref); root.appendChild(hh.head);
+    hh.actions.append(sortBtn, filtBtn, campusSel, batchSel, limitSel, loadBtn, stopBtn, ref); root.appendChild(hh.head);
     const imp = el('div', 'bkk42-editor open');
     const ta = el('textarea'); ta.placeholder = 'Paste full promo logins to include offline (space/comma/newline)';
     ta.value = readRosterExtra().join('\n'); ta.style.minHeight = '48px';
@@ -209,12 +251,24 @@
     const fillLimits = () => {
       limitSel.replaceChildren();
       const mk = (v, t) => { const o = el('option', '', t); o.value = v; limitSel.appendChild(o); };
-      mk('all', 'Load: all'); mk('50', 'Load: 50'); mk('100', 'Load: 100'); mk('200', 'Load: 200');
-      limitSel.value = ['all', '50', '100', '200'].includes(limit) ? limit : 'all';
+      mk('all', 'Load: all'); mk('10', 'Load: 10'); mk('25', 'Load: 25'); mk('50', 'Load: 50'); mk('100', 'Load: 100'); mk('200', 'Load: 200');
+      limitSel.value = ['all', '10', '25', '50', '100', '200'].includes(limit) ? limit : 'all';
     };
-    const stampDone = (n) => { hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 ' + n + ' known'; };
-    let locs = [];
-    try { locs = await getBangkok(force); }
+    const fillCampus = (known) => {
+      campusSel.replaceChildren();
+      const mk = (v, t) => { const o = el('option', '', t); o.value = v; campusSel.appendChild(o); };
+      mk(String(BANGKOK_CAMPUS_ID), 'Bangkok (default)');
+      mk('all', 'All campuses');
+      for (const id of ACTIVE_CAMPUSES.filter((x) => x !== BANGKOK_CAMPUS_ID)) mk(String(id), (known && known[id]) || ('Campus ' + id));
+      campusSel.value = campus;
+    };
+    const stampDone = (n) => { hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 ' + n + ' known \u00B7 ' + scopeNote; };
+    let locs = []; let scopeNote = 'Bangkok';
+    try {
+      if (campus === 'all') { const gm = await getGlobalMap(force); locs = [...gm.values()]; scopeNote = 'all campuses'; }
+      else if (Number(campus) === BANGKOK_CAMPUS_ID) { locs = await getBangkok(force); scopeNote = 'Bangkok'; }
+      else { locs = await getCampusCluster(campus, force); scopeNote = 'Campus ' + campus; }
+    }
     catch (_) { hh.note.textContent = 'Live feed unavailable \u00B7 showing cached'; }
     if (!alive()) return;
     const online = new Map(locs.map((e) => [String(e.login).toLowerCase(), e]));
@@ -222,7 +276,8 @@
     const snap = readMetaCache();
     const metas = roster.map((l) => ({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }));
     const isFresh = (m2) => !!(m2.meta && (m2.meta.batchN || m2.meta.level != null));
-    fillBatches(metas); fillLimits(); drawList(metas);
+    fillBatches(metas); fillLimits(); fillCampus(readCampusNames()); drawList(metas);
+    loadCampusNames().then((names) => { if (alive()) fillCampus(names); });
     const pending = () => metas.filter((m) => !isFresh(m));
     const loadMissing = async () => {
       const limN = limitSel.value === 'all' ? Infinity : Number(limitSel.value);
