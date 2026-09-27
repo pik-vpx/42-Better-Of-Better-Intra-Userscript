@@ -12,8 +12,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.0
-// @changelog    Official API only: login-gated leaderboard with login times, session scraping removed.
+// @version      2.6.1
+// @changelog    Removed manual token box; Login/Logout only.
 // ==/UserScript==
 
 
@@ -370,24 +370,19 @@
     isv.onclick = () => { try { localStorage.setItem(ROSTER_EXTRA_KEY, JSON.stringify(parseLogins(ta.value))); } catch (_) {} renderTop(root, false, keep()); };
     irow.append(isv, el('span', 'bkk42-hint', 'Stored locally. Merges with seen + friends.'));
     const trow = el('div', 'bkk42-editor-row');
-    const tinput = el('input'); tinput.type = 'password';
-    tinput.placeholder = readApiToken() ? 'API token saved — paste a new one to replace' : 'Paste 42 API token (optional, stored only here)';
-    tinput.style.cssText = 'flex:1;min-width:0;padding:9px 11px;background:#2a303b;color:#fff;border:1px solid #4c5564;border-radius:5px';
-    const tsv = el('button', '', 'Save token'); tsv.type = 'button';
-    const tclr = el('button', '', 'Clear'); tclr.type = 'button';
-    const tst = el('span', 'bkk42-hint', readApiToken() ? (apiStatus.ok === false ? 'API token rejected (401) — check it' : 'API linked — official v2 active') : 'Session mode — no token');
-    tsv.onclick = () => { const v = tinput.value.trim(); if (!v) return; writeApiStore({ a: v, r: '', exp: 0 }); apiStatus.ok = null; renderTop(root, false, keep()); };
-    tclr.onclick = () => { try { localStorage.removeItem(API_TOKEN_KEY); } catch (_) {} apiStatus.ok = null; renderTop(root, false, keep()); };
     const loginBtn = el('button', 'primary', 'Login with 42'); loginBtn.type = 'button';
+    const logoutBtn = el('button', '', 'Logout'); logoutBtn.type = 'button';
+    const tst = el('span', 'bkk42-hint', readApiToken() ? (apiStatus.ok === false ? 'API token rejected (401) — login again' : 'API linked — official v2 active') : 'Not logged in — login for the leaderboard');
     loginBtn.onclick = () => {
       if (!readApiSecret()) { tst.textContent = 'Save your app secret below first (local only)'; try { sinput.focus(); } catch (_) {} return; }
       window.open('https://api.intra.42.fr/oauth/authorize?client_id=' + encodeURIComponent(API_CLIENT_ID) + '&redirect_uri=' + encodeURIComponent(API_REDIRECT_URI) + '&response_type=code&scope=public', '_blank');
     };
-    trow.append(tinput, tsv, tclr, loginBtn, tst);
+    logoutBtn.onclick = () => { try { localStorage.removeItem(API_TOKEN_KEY); } catch (_) {} apiStatus.ok = null; renderTop(root, false, keep()); };
+    trow.append(loginBtn, logoutBtn, tst);
     const srow = el('div', 'bkk42-editor-row');
     const sinput = el('input'); sinput.type = 'password';
     sinput.placeholder = readApiSecret() ? 'App secret saved — paste new to replace' : 'Paste 42 app secret (local only, needed for login/refresh)';
-    sinput.style.cssText = tinput.style.cssText;
+    sinput.style.cssText = 'flex:1;min-width:0;padding:9px 11px;background:#2a303b;color:#fff;border:1px solid #4c5564;border-radius:5px';
     const ssv = el('button', '', 'Save secret'); ssv.type = 'button';
     ssv.onclick = () => { const v = sinput.value.trim(); if (!v) return; try { localStorage.setItem(API_SECRET_KEY, v); } catch (_) {} renderTop(root, false, keep()); };
     srow.append(sinput, ssv, el('span', 'bkk42-hint', 'Secret + token never leave this browser.'));
