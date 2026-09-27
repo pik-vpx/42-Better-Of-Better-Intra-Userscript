@@ -16,8 +16,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.11
-// @changelog    Sessions CSS at boot so 3-dots never jump.
+// @version      2.6.12
+// @changelog    Peerfinder-paced roster: progressive paint, cluster-only board, primary-campus source.
 // ==/UserScript==
 
 
@@ -209,7 +209,7 @@
   // Bulk roster sources, first page-1 with data wins. Shapes differ per endpoint.
   const ROSTER_SOURCES = [
     { name: 'campus-users', path: (id, p) => '/campus/' + id + '/users?page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=' + p },
-    { name: 'users-filter', path: (id, p) => '/users?filter[campus_id]=' + id + '&page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=' + p },
+    { name: 'users-filter', path: (id, p) => '/users?filter[primary_campus_id]=' + id + '&filter[kind]=student&page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=' + p },
     { name: 'cursus-users', path: (id, p) => '/cursus_users?filter[campus_id]=' + id + '&page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=' + p },
   ];
   const seedFromRosterItem = (u, only42) => {
@@ -228,7 +228,7 @@
     const main = cus.find((e) => e && e.cursus && e.cursus.slug === '42cursus') || null;
     return { login, id: u.id || 0, level: main && main.level != null ? Number(main.level) : null, begin: (main && (main.begin_at || main.created_at)) || '', auth: true };
   };
-  const loadCampusRoster = async (id) => {
+  const loadCampusRoster = async (id, onPage) => {
     id = Number(id);
     let rc = {};
     try { rc = JSON.parse(localStorage.getItem(ROSTER_CACHE_KEY) || '{}') || {}; } catch (_) {}
@@ -273,6 +273,7 @@
       }
     };
     ingest(firstPage);
+    if (typeof onPage === 'function') { try { onPage(seedMap.size); } catch (_) {} }
     if (firstPage.length >= ROSTER_PAGE_SIZE) {
       for (let page = 2; page <= ROSTER_MAX_PAGES; page++) {
         let d = null;
@@ -280,6 +281,7 @@
         catch (_) { break; }
         if (!Array.isArray(d) || !d.length) break;
         ingest(d);
+        if (typeof onPage === 'function') { try { onPage(seedMap.size); } catch (_) {} }
         if (d.length < ROSTER_PAGE_SIZE) break;
       }
     }
@@ -658,35 +660,44 @@
     catch (_) { hh.note.textContent = 'Live feed unavailable \u00B7 showing cached'; }
     if (!alive()) return;
     const online = new Map(locs.map((e) => [String(e.login).toLowerCase(), e]));
-    let roster = buildRoster([...online.keys()]);
+    const onlineKeys = [...online.keys()];
     const fullSet = new Set();
-    if (campus !== 'all' && readApiToken()) {
-      hh.note.textContent = 'Loading full campus roster...';
-      let rosterErr = '';
-      try {
-        const full = await withTimeout(loadCampusRoster(Number(campus)), 90000);
-        if (!alive()) return;
-        if (full && full.length) {
-          for (const l of full) fullSet.add(l);
-          roster = [...new Set(roster.concat(full))];
-          scopeNote += ' · full roster (' + lastSeedHits + ' levels via ' + (lastRosterSource || '?') + ')';
-        } else if (readApiToken()) {
-          scopeNote += ' · roster empty' + (rosterErr ? ' (' + rosterErr + ')' : ' (no error info)');
-        }
-      } catch (e) { rosterErr = String((e && e.message) || e || 'error'); scopeNote += ' · roster failed (' + rosterErr + ')'; }
-    }
-    const snap = readMetaCache();
-    let metas = roster.map((l) => ({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }));
-    const frSet = new Set(readFriends().concat(readRosterExtra()));
-    if (campus === 'all') { /* keep everyone */ }
-    else if (Number(campus) === BANGKOK_CAMPUS_ID) {
-      const sv = readSeen();
-      metas = metas.filter((m) => m.loc || frSet.has(m.login) || fullSet.has(m.login) || seenCampus(sv[m.login]) === BANGKOK_CAMPUS_ID);
+    const snapOf = () => readMetaCache();
+    let metas;
+    if (campus === 'all') {
+      const snap = snapOf();
+      metas = buildRoster(onlineKeys).map((l) => ({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }));
     } else {
-      metas = metas.filter((m) => m.loc || frSet.has(m.login) || fullSet.has(m.login));
+      const snap = snapOf();
+      metas = onlineKeys.map((l) => ({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }));
     }
     const isFresh = (m2) => !!(m2.meta && (m2.meta.batchN || m2.meta.level != null));
     fillBatches(metas); fillLimits(); fillCampus(readCampusNames()); drawList(metas);
+    if (campus !== 'all' && readApiToken()) {
+      hh.note.textContent = 'Loading students…';
+      try {
+        const extra = await withTimeout(loadCampusRoster(Number(campus), (n) => {
+          if (!alive()) return;
+          hh.note.textContent = 'Loading students… ' + n + ' found — browsing available';
+        }), 120000);
+        if (!alive()) return;
+        if (extra && extra.length) {
+          const have = new Set(metas.map((m) => m.login));
+          const snap = snapOf();
+          let added = 0;
+          for (const l of extra) {
+            fullSet.add(l);
+            if (!have.has(l)) { have.add(l); metas.push({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }); added++; }
+          }
+          if (added) {
+            scopeNote += ' · full roster (' + lastSeedHits + ' levels via ' + (lastRosterSource || '?') + ')';
+            fillBatches(metas); drawList(metas);
+          }
+        } else if (readApiToken()) {
+          scopeNote += ' · roster empty (no error info)';
+        }
+      } catch (e) { scopeNote += ' · roster failed (' + String((e && e.message) || e || 'error') + ')'; }
+    }
     loadCampusNames().then((names) => { if (alive()) fillCampus(names); });
     const pending = () => metas.filter((m) => !isFresh(m));
     const loadMissing = async () => {
