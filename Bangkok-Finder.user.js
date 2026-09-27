@@ -12,8 +12,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.3
-// @changelog    Expose diagnostics on both window and unsafeWindow.
+// @version      2.6.4
+// @changelog    Login handshake now reports its result in the status line.
 // ==/UserScript==
 
 
@@ -84,6 +84,7 @@
     })();
     return v2RefreshPromise;
   };
+  let exchangeCodeLastErr = '';
   const exchangeCode = async (code) => {
     const sec = readApiSecret();
     if (!sec) return false;
@@ -93,7 +94,7 @@
       writeApiStore({ a: t.access_token, r: t.refresh_token || '', exp: Date.now() + (Number(t.expires_in) || 7200) * 1000 });
       apiStatus.ok = true;
       return true;
-    } catch (_) { return false; }
+    } catch (e) { exchangeCodeLastErr = String((e && e.message) || e || 'error'); return false; }
   };
   const apiStatus = { ok: null };
   const readApiToken = () => { try { const s = readApiStore(); return String((s && s.a) || ''); } catch (_) { return ''; } };
@@ -372,7 +373,18 @@
     const trow = el('div', 'bkk42-editor-row');
     const loginBtn = el('button', 'primary', 'Login with 42'); loginBtn.type = 'button';
     const logoutBtn = el('button', '', 'Logout'); logoutBtn.type = 'button';
-    const tst = el('span', 'bkk42-hint', readApiToken() ? (apiStatus.ok === false ? 'API token rejected (401) — login again' : 'API linked — official v2 active') : 'Not logged in — login for the leaderboard');
+    const oauthStatusText = () => {
+      if (readApiToken()) return apiStatus.ok === false ? 'API token rejected (401) — login again' : 'API linked — official v2 active';
+      try {
+        const o = JSON.parse(localStorage.getItem('bkk42-oauth-last') || 'null');
+        if (o && !o.ok && Date.now() - (o.t || 0) < 3600000) {
+          if (o.err === 'no-secret') return 'Login returned a code but no secret saved — save secret, Login again';
+          return 'Last login failed' + (o.err ? ' (' + o.err + ')' : '') + ' — try again';
+        }
+      } catch (_) {}
+      return 'Not logged in — login for the leaderboard';
+    };
+    const tst = el('span', 'bkk42-hint', oauthStatusText());
     loginBtn.onclick = () => {
       if (!readApiSecret()) { tst.textContent = 'Save your app secret below first (local only)'; try { sinput.focus(); } catch (_) {} return; }
       window.open('https://api.intra.42.fr/oauth/authorize?client_id=' + encodeURIComponent(API_CLIENT_ID) + '&redirect_uri=' + encodeURIComponent(API_REDIRECT_URI) + '&response_type=code&scope=public', '_blank');
@@ -563,7 +575,8 @@
       if (code) {
         q.delete('code'); q.delete('state');
         history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q.toString() : '') + location.hash);
-        exchangeCode(code);
+        if (readApiSecret()) exchangeCode(code).then((ok) => { try { localStorage.setItem('bkk42-oauth-last', JSON.stringify({ ok, t: Date.now(), err: ok ? '' : exchangeCodeLastErr })); } catch (_) {} });
+        else try { localStorage.setItem('bkk42-oauth-last', JSON.stringify({ ok: false, t: Date.now(), err: 'no-secret' })); } catch (_) {}
       }
     } catch (_) {} (location.hostname === 'meta.intra.42.fr' ? mountMeta : mountProfile)(); if (spaObserver) spaObserver.disconnect(); spaObserver = new MutationObserver(() => { (location.hostname === 'meta.intra.42.fr' ? mountMeta : mountProfile)(); }); spaObserver.observe(document.body, { childList: true, subtree: true });   setTimeout(() => { if (location.hostname === 'meta.intra.42.fr') spaObserver?.disconnect(); }, 20000); };
   const recheckRoute = () => { if (location.href !== lastUrl) boot(); };
