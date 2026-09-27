@@ -387,29 +387,45 @@
     } catch (_) { return { hours: null, approx: true }; }
   };
   const LASTLOC_KEY = 'bkk42-last-loc';
-  const getLastLocation = async (login) => {
+  const getSessions = async (login) => {
     login = String(login || '').toLowerCase();
-    if (!login) return null;
+    if (!login) return [];
     let c = {};
     try { c = JSON.parse(localStorage.getItem(LASTLOC_KEY) || '{}') || {}; } catch (_) {}
     const hit = c[login];
-    if (hit && Date.now() - (hit.t || 0) < 86400000) return hit;
-    if (!readApiToken()) return hit || null;
+    if (hit && Array.isArray(hit.sessions) && Date.now() - (hit.t || 0) < 86400000) return hit.sessions;
+    const legacy = (hit && hit.host !== undefined && !Array.isArray(hit.sessions))
+      ? [{ host: String(hit.host || '').toUpperCase(), begin: hit.begin || '', end: hit.end || '' }]
+      : null;
+    if (legacy && Date.now() - (hit.t || 0) < 86400000) {
+      c[login] = { sessions: legacy, t: hit.t || Date.now() };
+      try { localStorage.setItem(LASTLOC_KEY, JSON.stringify(c)); } catch (_) {}
+      return legacy;
+    }
+    if (!readApiToken()) return legacy || (Array.isArray(hit && hit.sessions) ? hit.sessions : []);
     try {
       const d = await withTimeout(apiV2('/users/' + encodeURIComponent(login) + '/locations?page[size]=5'), 10000);
-      const arr = Array.isArray(d) ? d : [];
-      let best = null, bestT = 0;
-      for (const L of arr) {
-        const b = L && (L.begin_at || L.created_at);
-        const t = b ? Date.parse(b) : NaN;
-        if (!isNaN(t) && t > bestT) { bestT = t; best = L; }
-      }
-      if (!best) return hit || null;
-      const rec = { host: String((best.host || '')).toUpperCase(), begin: best.begin_at || best.created_at || '', end: best.end_at || '', t: Date.now() };
-      c[login] = rec;
+      const arr = (Array.isArray(d) ? d : [])
+        .filter((L) => L && (L.begin_at || L.created_at))
+        .sort((a, b) => Date.parse(b.begin_at || b.created_at) - Date.parse(a.begin_at || a.created_at))
+        .slice(0, 5)
+        .map((L) => ({ host: String(L.host || '').toUpperCase(), begin: L.begin_at || L.created_at || '', end: L.end_at || '' }));
+      c[login] = { sessions: arr, t: Date.now() };
       try { localStorage.setItem(LASTLOC_KEY, JSON.stringify(c)); } catch (_) {}
-      return rec;
-    } catch (_) { return hit || null; }
+      return arr;
+    } catch (e) {
+      if (legacy) return legacy;
+      if (hit && Array.isArray(hit.sessions)) return hit.sessions;
+      throw e;
+    }
+  };
+  const getLastLocation = async (login) => {
+    try {
+      const ss = await getSessions(login);
+      const b = ss[0];
+      if (!b) return null;
+      return { host: b.host, begin: b.begin, end: b.end, t: Date.now() };
+    } catch (_) { return null; }
   };
   const renderTop = async (root, force, opts) => {
     opts = opts || {};
