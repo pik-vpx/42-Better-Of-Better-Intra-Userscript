@@ -14,8 +14,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.4.0
-// @changelog    Full campus roster via API token — leaderboard loads the whole student body.
+// @version      2.4.1
+// @changelog    Discover-students button crawls intra search so no-token roster grows beyond friends+online.
 // ==/UserScript==
 
 
@@ -77,6 +77,27 @@
   };
   const readRosterExtra = () => { try { const v = JSON.parse(localStorage.getItem(ROSTER_EXTRA_KEY) || '[]'); return Array.isArray(v) ? parseLogins(v.join(' ')) : []; } catch (_) { return []; } };
   const buildRoster = (onlineLogins) => { const set = new Set(); for (const l of (onlineLogins || [])) { const s = String(l || '').toLowerCase(); if (s) set.add(s); } for (const l of Object.keys(readSeen())) set.add(String(l).toLowerCase()); for (const l of readFriends()) set.add(String(l).toLowerCase()); for (const l of readRosterExtra()) set.add(String(l).toLowerCase()); return [...set].filter((s) => /^[a-z0-9_-]{2,30}$/.test(s)); };
+  const SEARCH_PREFIXES = 'abcdefghijklmnopqrstuvwxyz0123456789'.split('');
+  const discoverLogins = async (have, onNote, alive) => {
+    const found = new Set(have);
+    let added = 0, done = 0;
+    for (const p of SEARCH_PREFIXES) {
+      if (!alive()) return { added, stopped: true, all: [...found] };
+      try {
+        const rs = await withTimeout(requestJSON('https://profile.intra.42.fr/searches/search.json?query=' + encodeURIComponent(p)), 12000);
+        if (Array.isArray(rs)) {
+          for (const x of rs) {
+            const l = String((x && x.login) || '').toLowerCase();
+            if (/^[a-z0-9_-]{2,30}$/.test(l) && !found.has(l)) { found.add(l); added++; }
+          }
+        }
+      } catch (_) {}
+      done++;
+      try { onNote('Discovering ' + done + '/' + SEARCH_PREFIXES.length + ' · +' + added + ' new'); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return { added, stopped: false, all: [...found] };
+  };
   const getUserMeta = async (login) => { login = String(login || '').toLowerCase(); if (!login) return {}; const c = readMetaCache(); const now = Date.now(); if (c[login] && now - (c[login].t || 0) < 604800000) return c[login];
     if (readApiToken()) {
       try {
@@ -289,7 +310,7 @@
     batchSel.onchange = () => renderTop(root, false, keep());
     limitSel.onchange = () => renderTop(root, false, keep());
     campusSel.onchange = () => renderTop(root, false, keep());
-    stopBtn.onclick = () => { root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1); stopBtn.hidden = true; loadBtn.hidden = false; ref.disabled = false; };
+    stopBtn.onclick = () => { root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1); stopBtn.hidden = true; loadBtn.hidden = false; ref.disabled = false; discoverBtn.disabled = false; };
     hh.actions.append(sortBtn, filtBtn, campusSel, batchSel, limitSel, loadBtn, stopBtn, ref); root.appendChild(hh.head);
     const imp = el('div', 'bkk42-editor open');
     const ta = el('textarea'); ta.placeholder = 'Paste full promo logins to include offline (space/comma/newline)';
@@ -308,7 +329,10 @@
     tsv.onclick = () => { const v = tinput.value.trim(); if (!v) return; try { localStorage.setItem(API_TOKEN_KEY, v); } catch (_) {} apiStatus.ok = null; renderTop(root, false, keep()); };
     tclr.onclick = () => { try { localStorage.removeItem(API_TOKEN_KEY); } catch (_) {} apiStatus.ok = null; renderTop(root, false, keep()); };
     trow.append(tinput, tsv, tclr, tst);
-    imp.append(ta, irow, trow); root.appendChild(imp);
+    const drow = el('div', 'bkk42-editor-row');
+    const discoverBtn = el('button', '', 'Discover students'); discoverBtn.type = 'button';
+    drow.append(discoverBtn, el('span', 'bkk42-hint', 'No token? Crawls intra search a–z/0–9 to find logins. Slow, stoppable.'));
+    imp.append(ta, irow, trow, drow); root.appendChild(imp);
     const list = el('div', 'bkk42-zones'); root.appendChild(list);
     const passPresence = (m2) => presence === 'all' || (presence === 'online' ? !!m2.loc : !m2.loc);
     const passBatch = (m2) => { const bn = (m2.meta && m2.meta.batchN) || 0; if (batch === 'all') return true; if (batch === 'new') return !bn; return String(bn) === batch; };
@@ -433,6 +457,25 @@
       stampDone(metas.length);
     };
     loadBtn.onclick = () => { loadMissing(); };
+    discoverBtn.onclick = async () => {
+      const tk = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1));
+      const isAlive = () => root.isConnected && root.dataset.loadToken === tk;
+      discoverBtn.disabled = true; stopBtn.hidden = false; ref.disabled = true;
+      const have = new Set(metas.map((m) => m.login));
+      const r = await discoverLogins(have, (t) => { if (isAlive()) hh.note.textContent = t; }, isAlive);
+      ref.disabled = false;
+      if (!isAlive()) return;
+      stopBtn.hidden = true; discoverBtn.disabled = false;
+      const fresh = (r.all || []).filter((l) => !have.has(l));
+      if (fresh.length) {
+        try { const curL = readRosterExtra(); localStorage.setItem(ROSTER_EXTRA_KEY, JSON.stringify([...new Set(curL.concat(fresh))])); } catch (_) {}
+        hh.note.textContent = 'Discovered ' + fresh.length + ' new logins — reloading...';
+        renderTop(root, false, keep());
+      } else {
+        hh.note.textContent = r.stopped ? 'Discovery stopped.' : 'Discovery found nothing new.';
+        stampDone(metas.length);
+      }
+    };
     if (mode === 'active') {
       stopBtn.hidden = false; ref.disabled = true;
       for (let i = 0; i < metas.length; i += 4) {
