@@ -16,8 +16,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.14
-// @changelog    Sessions by numeric id (peerfinder parity) with surfaced errors; Refresh forces roster re-fetch.
+// @version      2.6.15
+// @changelog    Fixed peerfinder's exact cursus pair (no discovery), uncapped pages, clean loading note.
 // ==/UserScript==
 
 
@@ -209,31 +209,20 @@
     campusClusterCache.promise.set(id, p);
     return p;
   };
-  const ROSTER_CACHE_KEY = 'bkk42-campus-roster@2';
+  const ROSTER_CACHE_KEY = 'bkk42-campus-roster@3';
   const ROSTER_PAGE_SIZE = 100;
-  const ROSTER_MAX_PAGES = 30;
+  const ROSTER_MAX_PAGES = 150;
   let lastSeedHits = 0;
   let lastRosterSource = '';
-  // Peerfinder-shaped bulk roster: per-cursus pages, deduped by user, totals from x-total.
-  const ROSTER_SLUG_FALLBACK = ['42cursus', 'c-piscine'];
-  const discoverRosterSlugs = async () => {
-    try {
-      const d = await withTimeout(apiV2('/cursus?page[size]=100'), 15000);
-      const slugs = (Array.isArray(d) ? d : []).map((c) => c && c.slug).filter(Boolean);
-      const out = [];
-      if (slugs.includes('42cursus')) out.push('42cursus');
-      for (const s of slugs) { if (s !== '42cursus' && /piscine/i.test(s) && !out.includes(s)) out.push(s); }
-      if (out.length) return out;
-    } catch (_) {}
-    return ROSTER_SLUG_FALLBACK.slice();
-  };
+  // Peerfinder parity: their exact hardcoded cursus list (bundle: ke=["42cursus","c-piscine"]) — no discovery.
+  const ROSTER_SLUGS = ['42cursus', 'c-piscine'];
   const loadCampusRoster = async (id, onPage, force) => {
     id = Number(id);
     let rc = {};
     try { rc = JSON.parse(localStorage.getItem(ROSTER_CACHE_KEY) || '{}') || {}; } catch (_) {}
     if (!force && rc[id] && Date.now() - (rc[id].t || 0) < 86400000 && Array.isArray(rc[id].logins) && rc[id].logins.length) return rc[id].logins;
     if (!readApiToken()) return null;
-    const slugs = await discoverRosterSlugs();
+    const slugs = ROSTER_SLUGS;
     lastRosterSource = slugs.join('+') || '?';
     const rows = new Map();
     let totalHint = 0, firstErr = '';
@@ -298,7 +287,7 @@
   const bkk42RosterDebug = async (id) => {
     id = Number(id) || BANGKOK_CAMPUS_ID;
     const out = { id, token: !!readApiToken(), source: lastRosterSource || '', slugs: [], pages: {} };
-    try { out.slugs = await discoverRosterSlugs(); } catch (_) { out.slugs = ROSTER_SLUG_FALLBACK.slice(); }
+    out.slugs = ROSTER_SLUGS.slice();
     for (const slug of out.slugs) {
       try {
         const d = await withTimeout(apiV2('/cursus/' + encodeURIComponent(slug) + '/cursus_users?filter[campus_id]=' + id + '&filter[future]=false&page[size]=5&page[number]=1'), 15000);
@@ -677,9 +666,9 @@
     if (campus !== 'all' && readApiToken()) {
       hh.note.textContent = 'Loading students…';
       try {
-        const extra = await withTimeout(loadCampusRoster(Number(campus), (n, total) => {
+        const extra = await withTimeout(loadCampusRoster(Number(campus), (n) => {
           if (!alive()) return;
-          hh.note.textContent = 'Loading students… ' + n + (total > 0 ? ' of ' + total : '') + ' found — browsing available';
+          hh.note.textContent = 'Loading students… ' + n + ' found — browsing available';
         }, force), 120000);
         if (!alive()) return;
         if (extra && extra.length) {
