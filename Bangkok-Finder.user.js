@@ -427,6 +427,75 @@
       return { host: b.host, begin: b.begin, end: b.end, t: Date.now() };
     } catch (_) { return null; }
   };
+  const SESSIONS_STYLE = 'bkk42-sessions-style';
+  const ensureSessionsStyle = () => {
+    if (document.getElementById(SESSIONS_STYLE)) return;
+    const st = el('style'); st.id = SESSIONS_STYLE;
+    st.textContent = '.bkk42-sess-back{position:fixed;inset:0;z-index:2147483001;display:grid;place-items:center;padding:20px;background:rgba(2,6,12,.7)}.bkk42-sess-box{display:flex;flex-direction:column;gap:12px;width:min(430px,94vw);max-height:82vh;overflow:auto;padding:16px 18px;background:#20252e;border:1px solid #3e4654;border-radius:12px;color:#eef2f5}.bkk42-sess-head{display:flex;align-items:center;justify-content:space-between}.bkk42-sess-head a{color:#fff;font-size:17px;font-weight:800;text-decoration:none}.bkk42-sess-x{border:0;border-radius:6px;background:#343b48;color:#fff;font-size:16px;font-weight:800;padding:4px 12px;cursor:pointer}.bkk42-sess-list{display:grid;gap:8px}.bkk42-sess-row{display:grid;grid-template-columns:14px 1fr auto;gap:10px;align-items:center;padding:9px 12px;background:#292f3a;border-radius:7px}.bkk42-sess-dot{width:9px;height:9px;border-radius:50%;background:#6b7280}.bkk42-sess-row.live .bkk42-sess-dot{background:#00d084}.bkk42-sess-row b{font-size:14px}.bkk42-dots{border:0;border-radius:6px;background:#343b48;color:#fff;font-weight:800;padding:4px 10px;cursor:pointer}';
+    document.head.appendChild(st);
+  };
+  let sessToken = 0;
+  const sessWhen = (s) => {
+    const parts = [];
+    if (s.begin) { const t = Date.parse(s.begin); if (!isNaN(t)) parts.push('started ' + fmtAgo(Date.now() - t) + ' ago'); }
+    if (s.end) { const t = Date.parse(s.end); if (!isNaN(t)) parts.push('ended ' + fmtAgo(Date.now() - t) + ' ago'); }
+    else parts.push('live now');
+    if (s.begin && s.end) { const d = Date.parse(s.end) - Date.parse(s.begin); if (d > 0) parts.push('~' + fmtAgo(d)); }
+    return parts.join(' · ');
+  };
+  const closeSessionsModal = () => { sessToken++; document.querySelectorAll('.bkk42-sess-back').forEach((n) => n.remove()); };
+  const openSessionsModal = async (login) => {
+    login = String(login || '').toLowerCase();
+    if (!login) return;
+    ensureSessionsStyle();
+    closeSessionsModal();
+    const my = ++sessToken;
+    const back = el('div', 'bkk42-sess-back');
+    const box = el('div', 'bkk42-sess-box');
+    const head = el('div', 'bkk42-sess-head');
+    const title = el('a', '', login); title.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login);
+    const x = el('button', 'bkk42-sess-x', '×'); x.type = 'button';
+    x.onclick = () => closeSessionsModal();
+    head.append(title, x);
+    const body = el('div', 'bkk42-sess-list', 'Loading sessions…');
+    box.append(head, body); back.appendChild(box);
+    back.addEventListener('click', (e) => { if (e.target === back) closeSessionsModal(); });
+    document.body.appendChild(back);
+    const esc = (e) => { if (e.key === 'Escape') { closeSessionsModal(); document.removeEventListener('keydown', esc); } };
+    document.addEventListener('keydown', esc);
+    if (!readApiToken()) {
+      if (my !== sessToken || !back.isConnected) return;
+      body.replaceChildren(el('div', 'bkk42-empty', 'Login with 42 to see sessions'));
+      return;
+    }
+    let sessions = null;
+    try { sessions = await getSessions(login); }
+    catch (_) { sessions = null; }
+    if (my !== sessToken || !back.isConnected) return;
+    body.replaceChildren();
+    if (sessions == null) {
+      const err = el('div', 'bkk42-empty', apiStatus.ok === false ? 'Session history unavailable — login again' : "Couldn't load sessions");
+      body.appendChild(err);
+      if (apiStatus.ok !== false) {
+        const retry = el('button', 'bkk42-dots', 'Try again'); retry.type = 'button';
+        retry.onclick = () => openSessionsModal(login);
+        body.appendChild(retry);
+      }
+      return;
+    }
+    if (!sessions.length) { body.appendChild(el('div', 'bkk42-empty', 'No recorded sessions')); return; }
+    sessions.forEach((s) => {
+      const row = el('div', 'bkk42-sess-row' + (!s.end ? ' live' : ''));
+      row.append(el('span', 'bkk42-sess-dot'), el('b', '', s.host || '?'), el('span', 'bkk42-sub', sessWhen(s)));
+      body.appendChild(row);
+    });
+  };
+  const makeDotsButton = (login) => {
+    const b = el('button', 'bkk42-dots', '⋯'); b.type = 'button'; b.title = 'Previous sessions';
+    b.setAttribute('aria-label', 'Previous sessions for ' + login);
+    b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openSessionsModal(login); };
+    return b;
+  };
   const renderTop = async (root, force, opts) => {
     opts = opts || {};
     const mode = opts.mode || root.dataset.sortMode || 'level';
