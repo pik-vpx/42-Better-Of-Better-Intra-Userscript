@@ -27,6 +27,7 @@ auto-updates itself. touch grass, not settings.
 - friends → **manage list**: dump logins in, separated however. it figures it out
 - leaderboard → **save roster**: paste your whole promo once, rank everybody including the ghosts
 - leaderboard → **login with 42**: save your app secret in the box once, hit login, approve on 42's page — tokens store + refresh themselves. no login? you still get the bangkok map + friends tabs. secrets stay in your browser, never shared, never committed 🔒
+- something broken? `F12` → console → run `await __bkk42Diag()` → paste the output in an issue. no token values in it, safe to share
 - everything lives in your `localStorage`. nothing leaves your browser 🤙
 
 ## wanna contribute?

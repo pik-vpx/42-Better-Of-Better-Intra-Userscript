@@ -12,8 +12,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.1
-// @changelog    Removed manual token box; Login/Logout only.
+// @version      2.6.2
+// @changelog    One-command health check: run __bkk42Diag() in console.
 // ==/UserScript==
 
 
@@ -567,6 +567,20 @@
       }
     } catch (_) {} (location.hostname === 'meta.intra.42.fr' ? mountMeta : mountProfile)(); if (spaObserver) spaObserver.disconnect(); spaObserver = new MutationObserver(() => { (location.hostname === 'meta.intra.42.fr' ? mountMeta : mountProfile)(); }); spaObserver.observe(document.body, { childList: true, subtree: true });   setTimeout(() => { if (location.hostname === 'meta.intra.42.fr') spaObserver?.disconnect(); }, 20000); };
   const recheckRoute = () => { if (location.href !== lastUrl) boot(); };
+  window.__bkk42Diag = async () => {
+    const out = { v: '', t: new Date().toISOString(), token: false, apiOk: null, cache: { meta: 0, seen: 0, friends: 0 }, probes: {} };
+    try { out.v = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || ''; } catch (_) {}
+    try { out.token = !!readApiToken(); out.apiOk = apiStatus.ok; } catch (_) {}
+    try { out.cache.meta = Object.keys(readMetaCache()).length; out.cache.seen = Object.keys(readSeen()).length; out.cache.friends = readFriends().length; } catch (_) {}
+    const probe = async (name, fn) => { try { await fn(); out.probes[name] = 'ok'; } catch (e) { out.probes[name] = 'FAIL ' + String((e && e.message) || e); } };
+    await probe('bangkok-feed', () => getBangkok(true));
+    if (out.token) {
+      await probe('v2-campus', () => apiV2('/campus/33'));
+      await probe('v2-roster-page', () => apiV2('/campus/33/users?page[size]=5&page[number]=1'));
+    }
+    try { console.log('[bkk42-diag]', JSON.stringify(out)); } catch (_) {}
+    return out;
+  };
   if (!window.__bkk42HistoryPatched) { window.__bkk42HistoryPatched = true; const op = history.pushState, or = history.replaceState; history.pushState = function () { const r = op.apply(this, arguments); setTimeout(recheckRoute, 400); return r; }; history.replaceState = function () { const r = or.apply(this, arguments); setTimeout(recheckRoute, 400); return r; }; window.addEventListener('popstate', () => setTimeout(boot, 400)); window.addEventListener('hashchange', () => setTimeout(boot, 400)); }
   document.addEventListener('keydown', (e) => { const mo = document.getElementById(ID.modal); if (e.key === 'Escape' && mo && !mo.hidden) mo.hidden = true; });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true }); else boot();
