@@ -16,8 +16,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.13
-// @changelog    Peerfinder-shaped roster: per-cursus bulk fetch with totals; sorted sessions.
+// @version      2.6.14
+// @changelog    Sessions by numeric id (peerfinder parity) with surfaced errors; Refresh forces roster re-fetch.
 // ==/UserScript==
 
 
@@ -209,7 +209,7 @@
     campusClusterCache.promise.set(id, p);
     return p;
   };
-  const ROSTER_CACHE_KEY = 'bkk42-campus-roster';
+  const ROSTER_CACHE_KEY = 'bkk42-campus-roster@2';
   const ROSTER_PAGE_SIZE = 100;
   const ROSTER_MAX_PAGES = 30;
   let lastSeedHits = 0;
@@ -227,11 +227,11 @@
     } catch (_) {}
     return ROSTER_SLUG_FALLBACK.slice();
   };
-  const loadCampusRoster = async (id, onPage) => {
+  const loadCampusRoster = async (id, onPage, force) => {
     id = Number(id);
     let rc = {};
     try { rc = JSON.parse(localStorage.getItem(ROSTER_CACHE_KEY) || '{}') || {}; } catch (_) {}
-    if (rc[id] && Date.now() - (rc[id].t || 0) < 86400000 && Array.isArray(rc[id].logins) && rc[id].logins.length) return rc[id].logins;
+    if (!force && rc[id] && Date.now() - (rc[id].t || 0) < 86400000 && Array.isArray(rc[id].logins) && rc[id].logins.length) return rc[id].logins;
     if (!readApiToken()) return null;
     const slugs = await discoverRosterSlugs();
     lastRosterSource = slugs.join('+') || '?';
@@ -405,21 +405,31 @@
       return legacy;
     }
     if (!readApiToken()) return legacy || (Array.isArray(hit && hit.sessions) ? hit.sessions : []);
-    try {
-      const d = await withTimeout(apiV2('/users/' + encodeURIComponent(login) + '/locations?sort=-end_at&page[size]=25'), 10000);
-      const arr = (Array.isArray(d) ? d : [])
-        .filter((L) => L && (L.begin_at || L.created_at))
-        .sort((a, b) => Date.parse(b.begin_at || b.created_at) - Date.parse(a.begin_at || a.created_at))
-        .slice(0, 5)
-        .map((L) => ({ host: String(L.host || '').toUpperCase(), begin: L.begin_at || L.created_at || '', end: L.end_at || '' }));
-      c[login] = { sessions: arr, t: Date.now() };
-      try { localStorage.setItem(LASTLOC_KEY, JSON.stringify(c)); } catch (_) {}
-      return arr;
-    } catch (e) {
-      if (legacy) return legacy;
-      if (hit && Array.isArray(hit.sessions)) return hit.sessions;
-      throw e;
+    const mapLocs = (d) => (Array.isArray(d) ? d : [])
+      .filter((L) => L && (L.begin_at || L.created_at))
+      .sort((a, b) => Date.parse(b.begin_at || b.created_at) - Date.parse(a.begin_at || a.created_at))
+      .slice(0, 5)
+      .map((L) => ({ host: String(L.host || '').toUpperCase(), begin: L.begin_at || L.created_at || '', end: L.end_at || '' }));
+    let uid = Number((readMetaCache()[login] || {}).id) || 0;
+    if (!uid) { try { uid = Number((await getUserMeta(login)).id) || 0; } catch (_) {} }
+    const tries = [];
+    if (uid) {
+      tries.push('/users/' + uid + '/locations?sort=-end_at&page[size]=25&page[number]=1');
+      tries.push('/users/' + uid + '/locations?page[size]=5');
     }
+    tries.push('/users/' + encodeURIComponent(login) + '/locations?page[size]=5');
+    const errs = [];
+    for (const path of tries) {
+      try {
+        const arr = mapLocs(await withTimeout(apiV2(path), 10000));
+        c[login] = { sessions: arr, t: Date.now() };
+        try { localStorage.setItem(LASTLOC_KEY, JSON.stringify(c)); } catch (_) {}
+        return arr;
+      } catch (e) { errs.push(path.split('?')[0] + ': ' + String((e && e.message) || e)); }
+    }
+    if (legacy) return legacy;
+    if (hit && Array.isArray(hit.sessions)) return hit.sessions;
+    throw new Error(errs.join(' | '));
   };
   const getLastLocation = async (login) => {
     try {
@@ -470,13 +480,14 @@
       body.replaceChildren(el('div', 'bkk42-empty', 'Login with 42 to see sessions'));
       return;
     }
-    let sessions = null;
+    let sessions = null, sessErr = '';
     try { sessions = await getSessions(login); }
-    catch (_) { sessions = null; }
+    catch (e) { sessErr = String((e && e.message) || e); }
+    try { console.log('[bkk42-sessions]', login, sessErr || 'ok'); } catch (_) {}
     if (my !== sessToken || !back.isConnected) return;
     body.replaceChildren();
     if (sessions == null) {
-      const err = el('div', 'bkk42-empty', apiStatus.ok === false ? 'Session history unavailable — login again' : "Couldn't load sessions");
+      const err = el('div', 'bkk42-empty', apiStatus.ok === false ? 'Session history unavailable — login again' : "Couldn't load sessions" + (sessErr ? " \u2014 " + sessErr : ""));
       body.appendChild(err);
       if (apiStatus.ok !== false) {
         const retry = el('button', 'bkk42-dots', 'Try again'); retry.type = 'button';
@@ -669,7 +680,7 @@
         const extra = await withTimeout(loadCampusRoster(Number(campus), (n, total) => {
           if (!alive()) return;
           hh.note.textContent = 'Loading students… ' + n + (total > 0 ? ' of ' + total : '') + ' found — browsing available';
-        }), 120000);
+        }, force), 120000);
         if (!alive()) return;
         if (extra && extra.length) {
           const have = new Set(metas.map((m) => m.login));
