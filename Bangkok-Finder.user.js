@@ -16,8 +16,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.9
-// @changelog    Previous-sessions modal via 3-dot buttons.
+// @version      2.6.10
+// @changelog    Roster prefers level-carrying source and 42cursus only; tiny fixed 3-dots.
 // ==/UserScript==
 
 
@@ -212,13 +212,14 @@
     { name: 'users-filter', path: (id, p) => '/users?filter[campus_id]=' + id + '&page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=' + p },
     { name: 'cursus-users', path: (id, p) => '/cursus_users?filter[campus_id]=' + id + '&page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=' + p },
   ];
-  const seedFromRosterItem = (u) => {
+  const seedFromRosterItem = (u, only42) => {
     if (!u || typeof u !== 'object') return null;
     if (u['staff?']) return null;
     if (u.user && typeof u.user === 'object') {
       const login = String(u.user.login || '').toLowerCase();
       if (!/^[a-z0-9_-]{2,30}$/.test(login)) return null;
       const slug = (u.cursus && u.cursus.slug) || '';
+      if (only42 && slug && slug !== '42cursus') return null;
       return { login, id: u.user.id || 0, level: u.level != null ? Number(u.level) : null, begin: u.begin_at || u.created_at || '', auth: slug === '42cursus' };
     }
     const login = String(u.login || '').toLowerCase();
@@ -234,11 +235,19 @@
     if (rc[id] && Date.now() - (rc[id].t || 0) < 86400000 && Array.isArray(rc[id].logins) && rc[id].logins.length) return rc[id].logins;
     if (!readApiToken()) return null;
     let src = null, firstPage = null, firstErr = '';
-    for (const s of ROSTER_SOURCES) {
-      try {
-        const d = await withTimeout(apiV2(s.path(id, 1)), 20000);
-        if (Array.isArray(d) && d.length) { src = s; firstPage = d; break; }
-      } catch (e) { if (!firstErr) firstErr = s.name + ': ' + String((e && e.message) || e); }
+    {
+      let bestScore = -1;
+      for (const s of ROSTER_SOURCES) {
+        let d = null;
+        try { d = await withTimeout(apiV2(s.path(id, 1)), 20000); }
+        catch (e) { if (!firstErr) firstErr = s.name + ': ' + String((e && e.message) || e); continue; }
+        if (!Array.isArray(d) || !d.length) continue;
+        let score = 0;
+        for (const u of d) {
+          if (u && (u.level != null || (Array.isArray(u.cursus_users) && u.cursus_users.length))) score++;
+        }
+        if (score > bestScore) { bestScore = score; src = s; firstPage = d; }
+      }
     }
     if (!src) throw new Error(firstErr || 'all roster sources empty');
     lastRosterSource = src.name;
@@ -257,8 +266,9 @@
       }
     };
     const ingest = (arr) => {
+      const only42 = src.name === 'cursus-users';
       for (const u of arr || []) {
-        const s = seedFromRosterItem(u);
+        const s = seedFromRosterItem(u, only42);
         if (s) putSeed(s.login, s);
       }
     };
@@ -431,7 +441,7 @@
   const ensureSessionsStyle = () => {
     if (document.getElementById(SESSIONS_STYLE)) return;
     const st = el('style'); st.id = SESSIONS_STYLE;
-    st.textContent = '.bkk42-sess-back{position:fixed;inset:0;z-index:2147483001;display:grid;place-items:center;padding:20px;background:rgba(2,6,12,.7)}.bkk42-sess-box{display:flex;flex-direction:column;gap:12px;width:min(430px,94vw);max-height:82vh;overflow:auto;padding:16px 18px;background:#20252e;border:1px solid #3e4654;border-radius:12px;color:#eef2f5}.bkk42-sess-head{display:flex;align-items:center;justify-content:space-between}.bkk42-sess-head a{color:#fff;font-size:17px;font-weight:800;text-decoration:none}.bkk42-sess-x{border:0;border-radius:6px;background:#343b48;color:#fff;font-size:16px;font-weight:800;padding:4px 12px;cursor:pointer}.bkk42-sess-list{display:grid;gap:8px}.bkk42-sess-row{display:grid;grid-template-columns:14px 1fr auto;gap:10px;align-items:center;padding:9px 12px;background:#292f3a;border-radius:7px}.bkk42-sess-dot{width:9px;height:9px;border-radius:50%;background:#6b7280}.bkk42-sess-row.live .bkk42-sess-dot{background:#00d084}.bkk42-sess-row b{font-size:14px}.bkk42-dots{border:0;border-radius:6px;background:#343b48;color:#fff;font-weight:800;padding:4px 10px;cursor:pointer}';
+    st.textContent = '.bkk42-sess-back{position:fixed;inset:0;z-index:2147483001;display:grid;place-items:center;padding:20px;background:rgba(2,6,12,.7)}.bkk42-sess-box{display:flex;flex-direction:column;gap:12px;width:min(430px,94vw);max-height:82vh;overflow:auto;padding:16px 18px;background:#20252e;border:1px solid #3e4654;border-radius:12px;color:#eef2f5}.bkk42-sess-head{display:flex;align-items:center;justify-content:space-between}.bkk42-sess-head a{color:#fff;font-size:17px;font-weight:800;text-decoration:none}.bkk42-sess-x{border:0;border-radius:6px;background:#343b48;color:#fff;font-size:16px;font-weight:800;padding:4px 12px;cursor:pointer}.bkk42-sess-list{display:grid;gap:8px}.bkk42-sess-row{display:grid;grid-template-columns:14px 1fr auto;gap:10px;align-items:center;padding:9px 12px;background:#292f3a;border-radius:7px}.bkk42-sess-dot{width:9px;height:9px;border-radius:50%;background:#6b7280}.bkk42-sess-row.live .bkk42-sess-dot{background:#00d084}.bkk42-sess-row b{font-size:14px}.bkk42-dots{float:right;border:0;border-radius:6px;background:#343b48;color:#fff;font-size:10px;font-weight:800;line-height:1.6;padding:0 7px;cursor:pointer}';
     document.head.appendChild(st);
   };
   let sessToken = 0;
