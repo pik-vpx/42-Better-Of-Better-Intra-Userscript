@@ -13,8 +13,8 @@
 // @connect      pace-system.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.2.1
-// @changelog    Remove floating profile chip, defer network enrichment to idle, fix batch pill clipping on long names.
+// @version      2.2.2
+// @changelog    Leaderboard tab with batch selector, on-demand loading, stats timeout and instant cache render.
 // ==/UserScript==
 
 
@@ -43,6 +43,7 @@
   const getToken = () => { try { return sessionStorage.getItem('ft_intrapy_token') || ''; } catch (_) { return ''; } };
   const authedJSON = async (url) => { const tk = getToken(); const H = tk ? { Authorization: tk, Accept: 'application/json' } : { Accept: 'application/json' }; if (typeof GM_xmlhttpRequest === 'function' && /^https:\/\/(intrapy\.intra\.42\.fr|pace-system\.42\.fr)/.test(url)) return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, headers: H, responseType: 'json', timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) })); if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { headers: H }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } const r = await fetch(url, { headers: H, credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
   const readMetaCache = () => { try { return JSON.parse(localStorage.getItem(META_KEY) || '{}') || {}; } catch (_) { return {}; } };
+  const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
   const readRosterExtra = () => { try { const v = JSON.parse(localStorage.getItem(ROSTER_EXTRA_KEY) || '[]'); return Array.isArray(v) ? parseLogins(v.join(' ')) : []; } catch (_) { return []; } };
   const buildRoster = (onlineLogins) => { const set = new Set(); for (const l of (onlineLogins || [])) { const s = String(l || '').toLowerCase(); if (s) set.add(s); } for (const l of Object.keys(readSeen())) set.add(String(l).toLowerCase()); for (const l of readFriends()) set.add(String(l).toLowerCase()); for (const l of readRosterExtra()) set.add(String(l).toLowerCase()); return [...set].filter((s) => /^[a-z0-9_-]{2,30}$/.test(s)); };
   const getUserMeta = async (login) => { login = String(login || '').toLowerCase(); if (!login) return {}; const c = readMetaCache(); const now = Date.now(); if (c[login] && now - (c[login].t || 0) < 604800000) return c[login]; try { const u = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login)); let level = (c[login] && c[login].level != null) ? c[login].level : null; try { const cu = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/cursus'); const main = Array.isArray(cu) ? cu.find((e) => e.slug === '42cursus') : null; if (main) level = main.level + (main.progress ? main.progress / 100 : 0); } catch (_) {} let batch = (c[login] && c[login].batch) || '', batchN = (c[login] && c[login].batchN) || 0, begin = (c[login] && c[login].begin) || ''; if (u && u.id) { try { const p = await authedJSON('https://pace-system.42.fr/api/v1/users/' + u.id + '/profile'); if (p && p.cursus_begin_date) { begin = p.cursus_begin_date; const b = batchFromDate(begin); if (b) { batch = b.label; batchN = b.n; } } } catch (_) {} } const m = { id: (u && u.id) || 0, level, batch, batchN, begin, t: now }; c[login] = m; try { localStorage.setItem(META_KEY, JSON.stringify(c)); } catch (_) {} return m; } catch (_) { return c[login] || {}; } };
@@ -108,7 +109,7 @@
       if (hit && hit.log30d != null && now - (hit.logT || 0) < 86400000) return { hours: hit.log30d, approx: !!hit.logApprox };
       let hours = null; let approx = true;
       try {
-        const s = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/locations_stats?range=30d');
+        const s = await withTimeout(authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/locations_stats?range=30d'), 8000);
         const arr = s && (s.locations || s.stats || s.data || s);
         if (Array.isArray(arr)) hours = arr.reduce((a, x) => a + (Number(x.total_hours || x.hours || x.duration_hours || 0)), 0) || null;
         else if (s && s.total_hours != null) hours = Number(s.total_hours);
@@ -129,58 +130,47 @@
     opts = opts || {};
     const mode = opts.mode || root.dataset.sortMode || 'level';
     const presence = opts.presence || root.dataset.presence || 'all';
-    root.dataset.sortMode = mode; root.dataset.presence = presence;
+    const batch = opts.batch !== undefined ? String(opts.batch) : (root.dataset.batch || 'all');
+    const limit = opts.limit !== undefined ? String(opts.limit) : (root.dataset.limit || 'all');
+    root.dataset.sortMode = mode; root.dataset.presence = presence; root.dataset.batch = batch; root.dataset.limit = limit;
+    const myToken = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1));
+    const alive = () => root.isConnected && root.dataset.loadToken === myToken;
     root.className = 'bkk42-root'; root.replaceChildren();
-    const hh = makeHead('Top \u00B7 per Batch', 'Loading known roster...');
+    const hh = makeHead('Leaderboard', 'Resolving roster...');
     const ref = el('button', 'primary', 'Refresh'); ref.type = 'button';
     const sortBtn = el('button', '', mode === 'level' ? 'Sort: Level' : 'Sort: Active 30d'); sortBtn.type = 'button';
     const filtBtn = el('button', '', 'Filter: ' + presence); filtBtn.type = 'button';
-    ref.onclick = () => renderTop(root, true, { mode, presence });
-    sortBtn.onclick = () => renderTop(root, false, { mode: mode === 'level' ? 'active' : 'level', presence });
-    filtBtn.onclick = () => { const nx = presence === 'all' ? 'online' : presence === 'online' ? 'offline' : 'all'; renderTop(root, false, { mode, presence: nx }); };
-    hh.actions.append(sortBtn, filtBtn, ref); root.appendChild(hh.head);
+    const selCss = 'border:0;border-radius:6px;padding:9px 14px;background:#343b48;color:#fff;font-weight:750;cursor:pointer';
+    const batchSel = el('select'); batchSel.style.cssText = selCss;
+    const limitSel = el('select'); limitSel.style.cssText = selCss;
+    const loadBtn = el('button', '', 'Load details'); loadBtn.type = 'button'; loadBtn.hidden = true;
+    const stopBtn = el('button', '', 'Stop'); stopBtn.type = 'button'; stopBtn.hidden = true;
+    const keep = () => ({ mode, presence, batch: batchSel.value || 'all', limit: limitSel.value || 'all' });
+    ref.onclick = () => renderTop(root, true, keep());
+    sortBtn.onclick = () => renderTop(root, false, Object.assign(keep(), { mode: mode === 'level' ? 'active' : 'level' }));
+    filtBtn.onclick = () => { const nx = presence === 'all' ? 'online' : presence === 'online' ? 'offline' : 'all'; renderTop(root, false, Object.assign(keep(), { presence: nx })); };
+    batchSel.onchange = () => renderTop(root, false, keep());
+    limitSel.onchange = () => renderTop(root, false, keep());
+    stopBtn.onclick = () => { root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1); stopBtn.hidden = true; loadBtn.hidden = false; ref.disabled = false; };
+    hh.actions.append(sortBtn, filtBtn, batchSel, limitSel, loadBtn, stopBtn, ref); root.appendChild(hh.head);
     const imp = el('div', 'bkk42-editor open');
     const ta = el('textarea'); ta.placeholder = 'Paste full promo logins to include offline (space/comma/newline)';
     ta.value = readRosterExtra().join('\n'); ta.style.minHeight = '48px';
     const irow = el('div', 'bkk42-editor-row');
     const isv = el('button', '', 'Save roster'); isv.type = 'button';
-    isv.onclick = () => { try { localStorage.setItem(ROSTER_EXTRA_KEY, JSON.stringify(parseLogins(ta.value))); } catch (_) {} renderTop(root, false, { mode, presence }); };
+    isv.onclick = () => { try { localStorage.setItem(ROSTER_EXTRA_KEY, JSON.stringify(parseLogins(ta.value))); } catch (_) {} renderTop(root, false, keep()); };
     irow.append(isv, el('span', 'bkk42-hint', 'Stored locally. Merges with seen + friends.'));
     imp.append(ta, irow); root.appendChild(imp);
     const list = el('div', 'bkk42-zones'); root.appendChild(list);
-    try {
-      ref.disabled = true;
-      const locs = await getBangkok(force);
-      const online = new Map(locs.map((e) => [String(e.login).toLowerCase(), e]));
-      let roster = buildRoster([...online.keys()]);
-      if (roster.length > 250) roster = roster.slice(0, 250);
-      hh.note.textContent = 'Loading 0/' + roster.length + ' \u00B7 known roster (online+offline)';
-      const metas = [];
-      for (let i = 0; i < roster.length; i += 4) {
-        const chunk = await Promise.all(roster.slice(i, i + 4).map(async (l) => ({ login: l, meta: await getUserMeta(l), loc: online.get(l) || null })));
-        metas.push(...chunk);
-        hh.note.textContent = 'Loading ' + Math.min(metas.length, roster.length) + '/' + roster.length + ' \u00B7 known roster';
-      }
+    const passPresence = (m2) => presence === 'all' || (presence === 'online' ? !!m2.loc : !m2.loc);
+    const passBatch = (m2) => { const bn = (m2.meta && m2.meta.batchN) || 0; if (batch === 'all') return true; if (batch === 'new') return !bn; return String(bn) === batch; };
+    const sortMetas = (arr) => { if (mode === 'active') arr.sort((a, b) => (((b.log && b.log.hours) == null) ? -1 : b.log.hours) - (((a.log && a.log.hours) == null) ? -1 : a.log.hours)); else arr.sort((a, b) => ((b.meta.level == null ? -1 : b.meta.level) - (a.meta.level == null ? -1 : a.meta.level))); };
+    const rowSub = (row) => row.loc ? 'Online \u00B7 ' + String(row.loc.host).toUpperCase() : 'Offline \u00B7 ' + agoLabel(null, row.login);
+    const drawList = (metas) => {
+      list.replaceChildren();
       const groups = new Map();
-      for (const m2 of metas) {
-        if (presence === 'online' && !m2.loc) continue;
-        if (presence === 'offline' && m2.loc) continue;
-        const key = (m2.meta && m2.meta.batchN) || 0;
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(m2);
-      }
-      if (mode === 'active') {
-        hh.note.textContent = 'Loading activity 0/' + metas.length + '...';
-        for (let i = 0; i < metas.length; i += 4) {
-          await Promise.all(metas.slice(i, i + 4).map(async (m2) => { m2.log = await getLog30d(m2.login, m2.loc); }));
-          hh.note.textContent = 'Loading activity ' + Math.min(metas.length, i + 4) + '/' + metas.length + '...';
-        }
-        for (const arr of groups.values()) arr.sort((a, b) => ((b.log && b.log.hours) == null ? -1 : b.log.hours) - (((a.log && a.log.hours) == null) ? -1 : a.log.hours));
-        hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 ' + roster.length + ' known \u00B7 Active 30d high\u2192low';
-      } else {
-        for (const arr of groups.values()) arr.sort((a, b) => ((b.meta.level == null ? -1 : b.meta.level) - (a.meta.level == null ? -1 : a.meta.level)));
-        hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 ' + roster.length + ' known \u00B7 Level high\u2192low';
-      }
+      for (const m2 of metas) { if (!passPresence(m2) || !passBatch(m2)) continue; const key = (m2.meta && m2.meta.batchN) || 0; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(m2); }
+      for (const arr of groups.values()) sortMetas(arr);
       for (const k of [...groups.keys()].sort((a, b) => b - a)) {
         const arr = groups.get(k);
         const label = k ? '#' + k : 'Unknown batch';
@@ -189,29 +179,98 @@
         sec.appendChild(el('h3', '', label + ' \u00B7 ' + arr.length + (arr.length > cap ? ' (top ' + cap + ')' : '')));
         const lw = el('div', 'bkk42-zones');
         const showAll = el('button', '', 'Show all ' + arr.length); showAll.type = 'button';
-        const draw = (limit) => {
+        const draw = (lim) => {
           lw.replaceChildren();
-          arr.slice(0, limit).forEach((row, idx) => {
+          arr.slice(0, lim).forEach((row, idx) => {
             const r = el('div', 'bkk42-rank');
             const a = el('a', '', (idx + 1) + '. ' + row.login + (row.loc ? '' : ' \u00B7 off'));
             a.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(row.login); a.style.color = '#fff';
-            const sub = row.loc ? 'Online \u00B7 ' + String(row.loc.host).toUpperCase() : 'Offline \u00B7 ' + agoLabel(null, row.login);
             const wrap = el('span');
-            if (mode === 'active') { const pre = row.log && row.log.approx ? '~' : ''; wrap.append(el('span', 'bkk42-lv', pre + fmtHours(row.log ? row.log.hours : null) + ' \u00B730d'), el('div', 'bkk42-sub', (row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) + ' \u00B7 ' : '') + sub)); }
-            else wrap.append(el('span', 'bkk42-lv', row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) : 'Lv \u2022\u2022\u2022'), el('div', 'bkk42-sub', sub));
+            if (mode === 'active') { const pre = row.log && row.log.approx ? '~' : ''; wrap.append(el('span', 'bkk42-lv', pre + fmtHours(row.log ? row.log.hours : null) + ' \u00B730d'), el('div', 'bkk42-sub', (row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) + ' \u00B7 ' : '') + rowSub(row))); }
+            else wrap.append(el('span', 'bkk42-lv', row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) : 'Lv \u2022\u2022\u2022'), el('div', 'bkk42-sub', rowSub(row)));
             r.append(el('b', '', '#' + (idx + 1)), a, wrap); lw.appendChild(r);
           });
-          if (arr.length > limit) { lw.appendChild(showAll); showAll.onclick = () => draw(arr.length); }
+          if (arr.length > lim) { lw.appendChild(showAll); showAll.onclick = () => draw(arr.length); }
         };
         draw(cap);
         sec.appendChild(lw); list.appendChild(sec);
       }
       if (!groups.size) list.appendChild(el('div', 'bkk42-empty', 'No one matches this filter yet.'));
-    } catch (_) { hh.note.textContent = 'Live feed unavailable'; list.appendChild(el('div', 'bkk42-error', 'Could not load leaderboard.')); }
-    finally { ref.disabled = false; }
+    };
+    const fillBatches = (metas) => {
+      const bs = [...new Set(metas.filter((m) => (m.meta && m.meta.batchN)).map((m) => m.meta.batchN))].sort((a, b) => b - a);
+      batchSel.replaceChildren();
+      const mk = (v, t) => { const o = el('option', '', t); o.value = v; batchSel.appendChild(o); };
+      mk('all', 'Batch: all');
+      for (const b of bs) mk(String(b), 'Batch #' + b);
+      mk('new', 'Batch: new');
+      batchSel.value = (batch === 'all' || batch === 'new' || bs.some((b) => String(b) === batch)) ? batch : 'all';
+    };
+    const fillLimits = () => {
+      limitSel.replaceChildren();
+      const mk = (v, t) => { const o = el('option', '', t); o.value = v; limitSel.appendChild(o); };
+      mk('all', 'Load: all'); mk('50', 'Load: 50'); mk('100', 'Load: 100'); mk('200', 'Load: 200');
+      limitSel.value = ['all', '50', '100', '200'].includes(limit) ? limit : 'all';
+    };
+    const stampDone = (n) => { hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 ' + n + ' known'; };
+    let locs = [];
+    try { locs = await getBangkok(force); }
+    catch (_) { hh.note.textContent = 'Live feed unavailable \u00B7 showing cached'; }
+    if (!alive()) return;
+    const online = new Map(locs.map((e) => [String(e.login).toLowerCase(), e]));
+    const roster = buildRoster([...online.keys()]);
+    const snap = readMetaCache();
+    const metas = roster.map((l) => ({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }));
+    const isFresh = (m2) => !!(m2.meta && (m2.meta.batchN || m2.meta.level != null));
+    fillBatches(metas); fillLimits(); drawList(metas);
+    const pending = () => metas.filter((m) => !isFresh(m));
+    const loadMissing = async () => {
+      const limN = limitSel.value === 'all' ? Infinity : Number(limitSel.value);
+      const queue = pending().slice(0, limN);
+      if (!queue.length || !alive()) return;
+      loadBtn.hidden = true; stopBtn.hidden = false; ref.disabled = true;
+      let done = 0;
+      for (let i = 0; i < queue.length; i += 4) {
+        if (!alive()) { ref.disabled = false; return; }
+        await Promise.all(queue.slice(i, i + 4).map(async (m2) => {
+          if (!alive()) return;
+          m2.meta = await getUserMeta(m2.login);
+          if (mode === 'active' && m2.log === undefined) m2.log = await getLog30d(m2.login, m2.loc);
+        }));
+        if (!alive()) { ref.disabled = false; return; }
+        done = Math.min(queue.length, i + 4);
+        fillBatches(metas); drawList(metas);
+        hh.note.textContent = 'Loading details ' + done + '/' + queue.length + '...';
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      ref.disabled = false;
+      if (!alive()) return;
+      stopBtn.hidden = true;
+      const left = pending().length;
+      if (left) { loadBtn.textContent = 'Load details (' + left + ' new)'; loadBtn.hidden = false; }
+      stampDone(metas.length);
+    };
+    loadBtn.onclick = () => { loadMissing(); };
+    if (mode === 'active') {
+      stopBtn.hidden = false; ref.disabled = true;
+      for (let i = 0; i < metas.length; i += 4) {
+        if (!alive()) { ref.disabled = false; return; }
+        await Promise.all(metas.slice(i, i + 4).map(async (m2) => { if (m2.log === undefined) m2.log = await getLog30d(m2.login, m2.loc); }));
+        if (!alive()) { ref.disabled = false; return; }
+        drawList(metas);
+        hh.note.textContent = 'Loading activity ' + Math.min(metas.length, i + 4) + '/' + metas.length + '...';
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      ref.disabled = false;
+      if (!alive()) return;
+      stopBtn.hidden = true;
+    }
+    const missing = pending().length;
+    if (missing) { loadBtn.textContent = 'Load details (' + missing + ' new)'; loadBtn.hidden = false; }
+    stampDone(metas.length);
   };
-  const createModal = () => { const ex = document.getElementById(ID.modal); if (ex && ex.openView) return ex; if (ex) ex.remove(); const mo = el('div'); mo.id = ID.modal; mo.hidden = true; const sh = el('section', 'bkk42-shell'); const bar = el('header', 'bkk42-bar'); const nv = el('nav', 'bkk42-nav'); const cb = el('button', 'active', 'Bangkok TH'); cb.type = 'button'; const fb = el('button', '', 'Friends'); fb.type = 'button'; const tb = el('button', '', 'Top'); tb.type = 'button'; const cl = el('button', 'bkk42-close', '\u00D7'); cl.type = 'button'; cl.setAttribute('aria-label', 'Close'); nv.append(cb, fb, tb); bar.append(el('div', 'bkk42-brand', '42 Bangkok'), nv, cl); const body = el('main', 'bkk42-modal-body'); const cv = el('section', 'bkk42-view'); const fv2 = el('section', 'bkk42-view'); fv2.hidden = true; const tv = el('section', 'bkk42-view'); tv.hidden = true; body.append(cv, fv2, tv); sh.append(bar, body); mo.appendChild(sh); document.body.appendChild(mo); const show = (n) => { cb.classList.toggle('active', n === 'cluster'); fb.classList.toggle('active', n === 'friends'); tb.classList.toggle('active', n === 'top'); cv.hidden = n !== 'cluster'; fv2.hidden = n !== 'friends'; tv.hidden = n !== 'top'; if (n === 'friends') renderFriends(fv2, false, (o, t2) => { fb.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); }); else if (n === 'top') renderTop(tv, false); else renderCluster(cv); }; cb.onclick = () => show('cluster'); fb.onclick = () => show('friends'); tb.onclick = () => show('top'); cl.onclick = () => { mo.hidden = true; }; mo.addEventListener('click', (e) => { if (e.target === mo) mo.hidden = true; }); mo.openView = (n) => { mo.hidden = false; show(n); }; return mo; };
-  const mountMeta = () => { const done = document.getElementById(ID.clusterTab)?.isConnected && document.getElementById(ID.clusterPane)?.isConnected && document.getElementById(ID.friendsTab)?.isConnected && document.getElementById(ID.friendsPane)?.isConnected && document.getElementById(ID.topTab)?.isConnected && document.getElementById(ID.topPane)?.isConnected; if (done) return true; const nv = document.querySelector('#main-container'); const ct = document.querySelector('#cluster-map .tab-content'); if (!nv || !ct) return false; [ID.clusterTab, ID.friendsTab, ID.topTab, ID.clusterPane, ID.friendsPane, ID.topPane, 'bi-friends-style'].forEach((id) => document.getElementById(id)?.remove()); const add = (tid, pid, label, render) => { const it = el('li'); it.id = tid; it.setAttribute('role', 'presentation'); const lk = el('a', '', label); lk.href = '#' + pid; lk.dataset.toggle = 'tab'; lk.setAttribute('role', 'tab'); const pn = el('div', 'tab-pane'); pn.id = pid; pn.setAttribute('role', 'tabpanel'); lk.addEventListener('click', () => render(pn)); it.appendChild(lk); nv.insertBefore(it, document.getElementById('cluster-shadow-host') || null); ct.appendChild(pn); return { link: lk, pane: pn }; }; add(ID.clusterTab, ID.clusterPane, 'Bangkok TH', (p) => renderCluster(p)); const fr2 = add(ID.friendsTab, ID.friendsPane, 'Friends', (p) => renderFriends(p, false, (o, t2) => { fr2.link.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); })); add(ID.topTab, ID.topPane, 'Top', (p) => renderTop(p)); return true; };
+  const createModal = () => { const ex = document.getElementById(ID.modal); if (ex && ex.openView) return ex; if (ex) ex.remove(); const mo = el('div'); mo.id = ID.modal; mo.hidden = true; const sh = el('section', 'bkk42-shell'); const bar = el('header', 'bkk42-bar'); const nv = el('nav', 'bkk42-nav'); const cb = el('button', 'active', 'Bangkok TH'); cb.type = 'button'; const fb = el('button', '', 'Friends'); fb.type = 'button'; const tb = el('button', '', 'Leaderboard'); tb.type = 'button'; const cl = el('button', 'bkk42-close', '\u00D7'); cl.type = 'button'; cl.setAttribute('aria-label', 'Close'); nv.append(cb, fb, tb); bar.append(el('div', 'bkk42-brand', '42 Bangkok'), nv, cl); const body = el('main', 'bkk42-modal-body'); const cv = el('section', 'bkk42-view'); const fv2 = el('section', 'bkk42-view'); fv2.hidden = true; const tv = el('section', 'bkk42-view'); tv.hidden = true; body.append(cv, fv2, tv); sh.append(bar, body); mo.appendChild(sh); document.body.appendChild(mo); const show = (n) => { cb.classList.toggle('active', n === 'cluster'); fb.classList.toggle('active', n === 'friends'); tb.classList.toggle('active', n === 'top'); cv.hidden = n !== 'cluster'; fv2.hidden = n !== 'friends'; tv.hidden = n !== 'top'; if (n === 'friends') renderFriends(fv2, false, (o, t2) => { fb.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); }); else if (n === 'top') renderTop(tv, false); else renderCluster(cv); }; cb.onclick = () => show('cluster'); fb.onclick = () => show('friends'); tb.onclick = () => show('top'); cl.onclick = () => { mo.hidden = true; }; mo.addEventListener('click', (e) => { if (e.target === mo) mo.hidden = true; }); mo.openView = (n) => { mo.hidden = false; show(n); }; return mo; };
+  const mountMeta = () => { const done = document.getElementById(ID.clusterTab)?.isConnected && document.getElementById(ID.clusterPane)?.isConnected && document.getElementById(ID.friendsTab)?.isConnected && document.getElementById(ID.friendsPane)?.isConnected && document.getElementById(ID.topTab)?.isConnected && document.getElementById(ID.topPane)?.isConnected; if (done) return true; const nv = document.querySelector('#main-container'); const ct = document.querySelector('#cluster-map .tab-content'); if (!nv || !ct) return false; [ID.clusterTab, ID.friendsTab, ID.topTab, ID.clusterPane, ID.friendsPane, ID.topPane, 'bi-friends-style'].forEach((id) => document.getElementById(id)?.remove()); const add = (tid, pid, label, render) => { const it = el('li'); it.id = tid; it.setAttribute('role', 'presentation'); const lk = el('a', '', label); lk.href = '#' + pid; lk.dataset.toggle = 'tab'; lk.setAttribute('role', 'tab'); const pn = el('div', 'tab-pane'); pn.id = pid; pn.setAttribute('role', 'tabpanel'); lk.addEventListener('click', () => render(pn)); it.appendChild(lk); nv.insertBefore(it, document.getElementById('cluster-shadow-host') || null); ct.appendChild(pn); return { link: lk, pane: pn }; }; add(ID.clusterTab, ID.clusterPane, 'Bangkok TH', (p) => renderCluster(p)); const fr2 = add(ID.friendsTab, ID.friendsPane, 'Friends', (p) => renderFriends(p, false, (o, t2) => { fr2.link.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); })); add(ID.topTab, ID.topPane, 'Leaderboard', (p) => renderTop(p)); return true; };
   const ensureFloatButton = () => { let f = document.getElementById(ID.float); if (!f) { f = el('button', '', 'TH'); f.id = ID.float; f.type = 'button'; f.title = 'Bangkok TH cluster'; f.setAttribute('aria-label', 'Open Bangkok TH cluster'); f.addEventListener('click', (e) => { e.preventDefault(); createModal().openView('cluster'); }); document.body.appendChild(f); } return true; };
 
 
