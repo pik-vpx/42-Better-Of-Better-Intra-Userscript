@@ -27,7 +27,7 @@ auto-updates itself. touch grass, not settings.
 - friends → **manage list**: dump logins in, separated however. it figures it out
 - leaderboard → **save roster**: paste your whole promo once, rank everybody including the ghosts
 - leaderboard → **discover students**: no token? this crawls intra search a–z/0–9 and grows your roster beyond friends + online. slow, stoppable, one click
-- leaderboard → **api token**: paste a 42 api token and the board loads the **whole campus roster** (levels seeded in one go), not just friends + online. steal yours from peerfinder:
+- leaderboard → **login with 42** (easiest): save your app secret in the box once, hit login, approve on 42's page — tokens store + refresh themselves. or paste a token manually (peerfinder console trick still works 👇)
   1. open your [peerfinder](https://peerfinder.org/online) tab (log in if needed)
   2. `F12` → **console**
   3. run `localStorage.getItem("token")` (or `"refresh_token"`)

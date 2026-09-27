@@ -14,8 +14,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.4.1
-// @changelog    Discover-students button crawls intra search so no-token roster grows beyond friends+online.
+// @version      2.5.0
+// @changelog    Login with 42 button, auto token refresh, all v2 traffic paced to 2/sec.
 // ==/UserScript==
 
 
@@ -49,9 +49,52 @@
   const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
   // SECURITY: never hardcode a token here — paste it in the Leaderboard UI box. Browser localStorage only, never in git.
   const API_TOKEN_KEY = 'bkk42-api-token';
+  const API_CLIENT_ID = 'u-s4t2ud-15306ab01ddd3adffadab88702be58dcb5d7c50791f930aaababf8da79ae4d06';
+  const API_REDIRECT_URI = 'https://meta.intra.42.fr/clusters';
+  const API_SECRET_KEY = 'bkk42-api-secret';
+  const readApiSecret = () => { try { return (localStorage.getItem(API_SECRET_KEY) || '').trim(); } catch (_) { return ''; } };
+  const readApiStore = () => { try { const raw = localStorage.getItem(API_TOKEN_KEY) || ''; if (!raw) return {}; const o = JSON.parse(raw); if (o && typeof o === 'object' && !Array.isArray(o)) return o; return { a: raw }; } catch (_) { try { return { a: localStorage.getItem(API_TOKEN_KEY) || '' }; } catch (_) { return {}; } } };
+  const writeApiStore = (o) => { try { localStorage.setItem(API_TOKEN_KEY, JSON.stringify(o)); } catch (_) {} };
+  const v2Queue = { tail: Promise.resolve(), at: 0 };
+  const v2Slot = () => { const run = v2Queue.tail.then(async () => { const wait = Math.max(0, 600 - (Date.now() - v2Queue.at)); if (wait) await new Promise((r) => setTimeout(r, wait)); v2Queue.at = Date.now(); }); v2Queue.tail = run.catch(() => {}); return run; };
+  const oauthTokenRequest = (body) => new Promise((res, rej) => {
+    if (typeof GM_xmlhttpRequest !== 'function') return rej(new Error('no GM_xhr'));
+    GM_xmlhttpRequest({ method: 'POST', url: 'https://api.intra.42.fr/oauth/token', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, data: body, responseType: 'json', timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { const j = r.response != null ? r.response : JSON.parse(r.responseText); if (!j.access_token) return rej(new Error('no token')); res(j); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) });
+  });
+  let v2RefreshPromise = null;
+  const ensureV2Token = () => {
+    const s = readApiStore();
+    if (s.a && (!s.exp || s.exp - Date.now() > 60000)) return Promise.resolve(true);
+    if (!s.r || !readApiSecret()) return Promise.resolve(!!s.a);
+    if (v2RefreshPromise) return v2RefreshPromise;
+    v2RefreshPromise = (async () => {
+      try {
+        const body = 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(s.r) + '&client_id=' + encodeURIComponent(API_CLIENT_ID) + '&client_secret=' + encodeURIComponent(readApiSecret());
+        const t = await oauthTokenRequest(body);
+        writeApiStore({ a: t.access_token, r: t.refresh_token || s.r, exp: Date.now() + (Number(t.expires_in) || 7200) * 1000 });
+        apiStatus.ok = true;
+        return true;
+      } catch (_) { return !!readApiStore().a; }
+      finally { v2RefreshPromise = null; }
+    })();
+    return v2RefreshPromise;
+  };
+  const exchangeCode = async (code) => {
+    const sec = readApiSecret();
+    if (!sec) return false;
+    const body = 'grant_type=authorization_code&client_id=' + encodeURIComponent(API_CLIENT_ID) + '&client_secret=' + encodeURIComponent(sec) + '&code=' + encodeURIComponent(code) + '&redirect_uri=' + encodeURIComponent(API_REDIRECT_URI);
+    try {
+      const t = await oauthTokenRequest(body);
+      writeApiStore({ a: t.access_token, r: t.refresh_token || '', exp: Date.now() + (Number(t.expires_in) || 7200) * 1000 });
+      apiStatus.ok = true;
+      return true;
+    } catch (_) { return false; }
+  };
   const apiStatus = { ok: null };
-  const readApiToken = () => { try { return (localStorage.getItem(API_TOKEN_KEY) || '').trim(); } catch (_) { return ''; } };
+  const readApiToken = () => { try { const s = readApiStore(); return String((s && s.a) || ''); } catch (_) { return ''; } };
   const apiV2 = async (path) => {
+    try { await ensureV2Token(); } catch (_) {}
+    await v2Slot();
     const tk = readApiToken();
     if (!tk) throw new Error('no token');
     const url = 'https://api.intra.42.fr/v2' + path;
@@ -326,13 +369,25 @@
     const tsv = el('button', '', 'Save token'); tsv.type = 'button';
     const tclr = el('button', '', 'Clear'); tclr.type = 'button';
     const tst = el('span', 'bkk42-hint', readApiToken() ? (apiStatus.ok === false ? 'API token rejected (401) — check it' : 'API linked — official v2 active') : 'Session mode — no token');
-    tsv.onclick = () => { const v = tinput.value.trim(); if (!v) return; try { localStorage.setItem(API_TOKEN_KEY, v); } catch (_) {} apiStatus.ok = null; renderTop(root, false, keep()); };
+    tsv.onclick = () => { const v = tinput.value.trim(); if (!v) return; writeApiStore({ a: v, r: '', exp: 0 }); apiStatus.ok = null; renderTop(root, false, keep()); };
     tclr.onclick = () => { try { localStorage.removeItem(API_TOKEN_KEY); } catch (_) {} apiStatus.ok = null; renderTop(root, false, keep()); };
-    trow.append(tinput, tsv, tclr, tst);
+    const loginBtn = el('button', 'primary', 'Login with 42'); loginBtn.type = 'button';
+    loginBtn.onclick = () => {
+      if (!readApiSecret()) { tst.textContent = 'Save your app secret below first (local only)'; try { sinput.focus(); } catch (_) {} return; }
+      window.open('https://api.intra.42.fr/oauth/authorize?client_id=' + encodeURIComponent(API_CLIENT_ID) + '&redirect_uri=' + encodeURIComponent(API_REDIRECT_URI) + '&response_type=code&scope=public', '_blank');
+    };
+    trow.append(tinput, tsv, tclr, loginBtn, tst);
+    const srow = el('div', 'bkk42-editor-row');
+    const sinput = el('input'); sinput.type = 'password';
+    sinput.placeholder = readApiSecret() ? 'App secret saved — paste new to replace' : 'Paste 42 app secret (local only, needed for login/refresh)';
+    sinput.style.cssText = tinput.style.cssText;
+    const ssv = el('button', '', 'Save secret'); ssv.type = 'button';
+    ssv.onclick = () => { const v = sinput.value.trim(); if (!v) return; try { localStorage.setItem(API_SECRET_KEY, v); } catch (_) {} renderTop(root, false, keep()); };
+    srow.append(sinput, ssv, el('span', 'bkk42-hint', 'Secret + token never leave this browser.'));
     const drow = el('div', 'bkk42-editor-row');
     const discoverBtn = el('button', '', 'Discover students'); discoverBtn.type = 'button';
     drow.append(discoverBtn, el('span', 'bkk42-hint', 'No token? Crawls intra search a–z/0–9 to find logins. Slow, stoppable.'));
-    imp.append(ta, irow, trow, drow); root.appendChild(imp);
+    imp.append(ta, irow, trow, srow, drow); root.appendChild(imp);
     const list = el('div', 'bkk42-zones'); root.appendChild(list);
     const passPresence = (m2) => presence === 'all' || (presence === 'online' ? !!m2.loc : !m2.loc);
     const passBatch = (m2) => { const bn = (m2.meta && m2.meta.batchN) || 0; if (batch === 'all') return true; if (batch === 'new') return !bn; return String(bn) === batch; };
@@ -502,7 +557,16 @@
 
   const mountProfile = () => { createModal(); const ex = document.getElementById(ID.shortcut); if (ex?.isConnected) { document.getElementById(ID.float)?.remove(); return true; } if (ex) ex.remove(); const cl2 = [...document.querySelectorAll('a')].find((l) => l.textContent.trim() === 'Clusters'); const wr = cl2?.parentElement; if (!wr?.parentElement) return ensureFloatButton(); const mo = createModal(); const tw = wr.cloneNode(true); tw.id = ID.shortcut; const tl = tw.querySelector('a'); tl.href = '#'; tl.removeAttribute('data-bi-bangkok-bound'); const lb = tl.querySelector('span'); if (lb) lb.textContent = 'TH'; else tl.textContent = 'TH'; tl.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); mo.openView('cluster'); }, true); wr.after(tw); document.getElementById(ID.float)?.remove(); return true; };
   let spaObserver = null; let lastUrl = location.href;
-  const boot = () => { installStyle(); lastUrl = location.href; (location.hostname === 'meta.intra.42.fr' ? mountMeta : mountProfile)(); if (spaObserver) spaObserver.disconnect(); spaObserver = new MutationObserver(() => { (location.hostname === 'meta.intra.42.fr' ? mountMeta : mountProfile)(); }); spaObserver.observe(document.body, { childList: true, subtree: true });   setTimeout(() => { if (location.hostname === 'meta.intra.42.fr') spaObserver?.disconnect(); }, 20000); };
+  const boot = () => { installStyle(); lastUrl = location.href;
+    try {
+      const q = new URLSearchParams(location.search);
+      const code = q.get('code');
+      if (code) {
+        q.delete('code'); q.delete('state');
+        history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q.toString() : '') + location.hash);
+        exchangeCode(code);
+      }
+    } catch (_) {} (location.hostname === 'meta.intra.42.fr' ? mountMeta : mountProfile)(); if (spaObserver) spaObserver.disconnect(); spaObserver = new MutationObserver(() => { (location.hostname === 'meta.intra.42.fr' ? mountMeta : mountProfile)(); }); spaObserver.observe(document.body, { childList: true, subtree: true });   setTimeout(() => { if (location.hostname === 'meta.intra.42.fr') spaObserver?.disconnect(); }, 20000); };
   const recheckRoute = () => { if (location.href !== lastUrl) boot(); };
   if (!window.__bkk42HistoryPatched) { window.__bkk42HistoryPatched = true; const op = history.pushState, or = history.replaceState; history.pushState = function () { const r = op.apply(this, arguments); setTimeout(recheckRoute, 400); return r; }; history.replaceState = function () { const r = or.apply(this, arguments); setTimeout(recheckRoute, 400); return r; }; window.addEventListener('popstate', () => setTimeout(boot, 400)); window.addEventListener('hashchange', () => setTimeout(boot, 400)); }
   document.addEventListener('keydown', (e) => { const mo = document.getElementById(ID.modal); if (e.key === 'Escape' && mo && !mo.hidden) mo.hidden = true; });
