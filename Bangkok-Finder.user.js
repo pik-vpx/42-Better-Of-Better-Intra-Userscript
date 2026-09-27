@@ -1,5 +1,4 @@
 // ==UserScript==
-// @bound-url    https://meta.intra.42.fr/clusters
 // @name         42 Bangkok Cluster & Friends
 // @namespace    sider.intra42.bangkok
 // @description  Adds Bangkok TH cluster, cross-campus Friends presence, relative login time, Batch badges and per-batch level leaderboard.
@@ -11,13 +10,13 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @grant        GM_addValueChangeListener
+// @grant        unsafeWindow
 // @connect      meta.intra.42.fr
-// @connect      profile.intra.42.fr
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.15
-// @changelog    Fixed peerfinder's exact cursus pair (no discovery), uncapped pages, clean loading note.
+// @version      2.6.16
+// @changelog    Full audit: dropped unverified endpoints, dead code and silent failures; honest stats + render guards.
 // ==/UserScript==
 
 
@@ -40,10 +39,9 @@
   const writeFriends = (l) => localStorage.setItem(FRIENDS_KEY, JSON.stringify(l));
   const readSeen = () => { try { return JSON.parse(localStorage.getItem(SEEN_KEY) || '{}') || {}; } catch (_) { return {}; } };
   const seenTime = (v) => (typeof v === 'number' ? v : ((v && v.t) || 0));
-  const seenCampus = (v) => (v && typeof v === 'object' ? (Number(v.c) || 0) : 0);
-  const recordSeen = (entries, campusId) => { try { const s = readSeen(); const n = Date.now(); let ch = false; for (const e of entries || []) { const l = String((e && e.login) || '').toLowerCase(); if (!l) continue; const cp = Number((e && e.campus_id) || campusId || 0); const prev = s[l]; if (!prev || n - seenTime(prev) > 60000) { s[l] = { t: n, c: cp }; ch = true; } } if (ch) localStorage.setItem(SEEN_KEY, JSON.stringify(s)); } catch (_) {} };
+  const recordSeen = (entries, campusId) => { try { const s = readSeen(); const n = Date.now(); let ch = false; for (const e of entries || []) { const l = String((e && e.login) || '').toLowerCase(); if (!l) continue; const cp = Number((e && e.campus_id) || campusId || 0); const prev = s[l]; if (!prev || n - seenTime(prev) > 60000) { s[l] = { t: n, c: cp }; ch = true; } } if (ch) { for (const k of Object.keys(s)) { if (n - seenTime(s[k]) > 2592000000) delete s[k]; } localStorage.setItem(SEEN_KEY, JSON.stringify(s)); } } catch (_) {} };
   const fmtAgo = (ms) => { if (!isFinite(ms) || ms < 0) ms = 0; const t = Math.floor(ms / 1000); const d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; if (d > 0) return d + 'd ' + h + 'h'; if (h > 0) return h + 'h ' + m + 'm'; if (m > 0) return m + 'm ' + s + 's'; return s + 's'; };
-  const agoLabel = (beginAt, login) => { if (beginAt) { const t = Date.parse(beginAt); if (!isNaN(t)) return fmtAgo(Date.now() - t); } if (login) { const s = readSeen()[String(login).toLowerCase()]; if (s) { const a = Date.now() - seenTime(s); if (a > 36e5) return '... ' + fmtAgo(a) + ' ago'; return 'seen ' + fmtAgo(a) + ' ago'; } } return '...'; };
+  const agoLabel = (beginAt, login, seenMap) => { if (beginAt) { const t = Date.parse(beginAt); if (!isNaN(t)) return fmtAgo(Date.now() - t); } if (login) { const s = (seenMap || readSeen())[String(login).toLowerCase()]; if (s) { const a = Date.now() - seenTime(s); if (a > 36e5) return '... ' + fmtAgo(a) + ' ago'; return 'seen ' + fmtAgo(a) + ' ago'; } } return '...'; };
   const batchFromDate = (iso) => { if (!iso) return null; const d = new Date(iso); if (isNaN(d)) return null; const y = d.getFullYear(); const n = y - 2017; if (!(n > 0 && n < 30)) return null; return { n, label: '#' + n }; };
 
 
@@ -70,13 +68,6 @@
   const readApiStore = () => { try { const raw = gmGet(API_TOKEN_KEY, ''); if (!raw) return {}; const o = JSON.parse(raw); if (o && typeof o === 'object' && !Array.isArray(o)) return o; return { a: raw }; } catch (_) { const fb = gmGet(API_TOKEN_KEY, ''); return fb ? { a: fb } : {}; } };
   const writeApiStore = (o) => gmSet(API_TOKEN_KEY, JSON.stringify(o));
   const v2Starts = [];
-  let v2LastTotal = 0;
-  const noteV2Total = (headers) => {
-    try {
-      const m = String(headers || '').match(/^x-total:\s*(\d+)/mi);
-      if (m) v2LastTotal = Number(m[1]);
-    } catch (_) {}
-  };
   const v2Slot = async () => {
     for (;;) {
       const now = Date.now();
@@ -127,13 +118,7 @@
     const tk = readApiToken();
     if (!tk) throw new Error('no token');
     const url = 'https://api.intra.42.fr/v2' + path;
-    if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, headers: { Authorization: 'Bearer ' + tk, Accept: 'application/json' }, responseType: 'json', timeout: 15000, onload: (r) => { try { noteV2Total(r && r.responseHeaders); } catch (_) {} if (r.status === 401 || r.status === 403) { apiStatus.ok = false; return rej(new Error('HTTP ' + r.status + ' bad token')); } if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); apiStatus.ok = true; try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) }));
-    const r = await withTimeout(fetch(url, { headers: { Authorization: 'Bearer ' + tk, Accept: 'application/json' } }), 15000);
-    if (r.status === 401 || r.status === 403) { apiStatus.ok = false; throw new Error('HTTP ' + r.status + ' bad token'); }
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    apiStatus.ok = true;
-    try { const ht = Number(r.headers.get('x-total')); if (ht > 0) v2LastTotal = ht; } catch (_) {}
-    return r.json();
+    if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, headers: { Authorization: 'Bearer ' + tk, Accept: 'application/json' }, responseType: 'json', timeout: 15000, onload: (r) => { if (r.status === 401 || r.status === 403) { apiStatus.ok = false; return rej(new Error('HTTP ' + r.status + ' bad token')); } if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); apiStatus.ok = true; try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) }));
   };
   const parseV2Stats = (s) => {
     if (s == null) return null;
@@ -161,14 +146,15 @@
         const begin = (main && (main.begin_at || main.created_at)) || (c[login] && c[login].begin) || '';
         if (begin) { const b = batchFromDate(begin); if (b) { batch = b.label; batchN = b.n; } }
         const m = { id: (u && u.id) || 0, level, batch, batchN, begin, t: now };
-        c[login] = m; try { localStorage.setItem(META_KEY, JSON.stringify(c)); } catch (_) {}
+        try { const cc = readMetaCache(); cc[login] = m; localStorage.setItem(META_KEY, JSON.stringify(cc)); } catch (_) {}
         return m;
-      } catch (_) {}
+      } catch (e) { console.warn('[bkk42] user meta failed', login, String((e && e.message) || e)); }
     }
     return c[login] || {}; };
-  const requestJSON = async (url) => { if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, responseType: 'json', withCredentials: true, timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) })); const r = await fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
-  const getBangkok = async (force) => { if (!force && bangkokCache.data.length && Date.now() - bangkokCache.time < 60000) return bangkokCache.data; if (bangkokCache.promise) return bangkokCache.promise; bangkokCache.promise = requestJSON(CLUSTER_URL).then((data) => { bangkokCache.data = Array.isArray(data) ? data.filter((e) => e && !e.end_at && e.login && e.host) : [];       bangkokCache.time = Date.now(); recordSeen(bangkokCache.data, BANGKOK_CAMPUS_ID); return bangkokCache.data; }).finally(() => { bangkokCache.promise = null; }); return bangkokCache.promise; };
-  const getGlobalMap = async (force) => { if (!force && globalCache.map.size && Date.now() - globalCache.time < 60000) return globalCache.map; if (globalCache.promise) return globalCache.promise; globalCache.promise = (async () => { const urls = [CLUSTER_URL].concat(ACTIVE_CAMPUSES.filter((id) => id !== BANGKOK_CAMPUS_ID).map((id) => CLUSTER_URL + '?campus_id=' + id)); const settled = await Promise.all(urls.map(async (u) => { try { const d = await requestJSON(u); return Array.isArray(d) ? d.filter((e) => e && !e.end_at && e.login && e.host) : []; } catch (_) { return []; } }));       const map = new Map(); for (const e of settled.flat()) map.set(String(e.login).toLowerCase(), e); recordSeen([...map.values()], 0); globalCache.map = map; globalCache.time = Date.now(); return map; })().finally(() => { globalCache.promise = null; }); return globalCache.promise; };
+  const requestJSON = async (url) => { if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, responseType: 'json', withCredentials: true, timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) }));
+  };
+  const getBangkok = async (force) => { if (!force && bangkokCache.time && Date.now() - bangkokCache.time < 60000) return bangkokCache.data; if (bangkokCache.promise) return bangkokCache.promise; bangkokCache.promise = requestJSON(CLUSTER_URL).then((data) => { bangkokCache.data = Array.isArray(data) ? data.filter((e) => e && !e.end_at && e.login && e.host) : [];       bangkokCache.time = Date.now(); recordSeen(bangkokCache.data, BANGKOK_CAMPUS_ID); return bangkokCache.data; }).finally(() => { bangkokCache.promise = null; }); return bangkokCache.promise; };
+  const getGlobalMap = async (force) => { if (!force && globalCache.time && Date.now() - globalCache.time < 60000) return globalCache.map; if (globalCache.promise) return globalCache.promise; globalCache.promise = (async () => { const urls = [CLUSTER_URL].concat(ACTIVE_CAMPUSES.filter((id) => id !== BANGKOK_CAMPUS_ID).map((id) => CLUSTER_URL + '?campus_id=' + id)); let okCount = 0; const settled = await Promise.all(urls.map(async (u) => { try { const d = await requestJSON(u); okCount++; return Array.isArray(d) ? d.filter((e) => e && !e.end_at && e.login && e.host) : []; } catch (e) { console.warn('[bkk42] feed failed', u.replace('https://meta.intra.42.fr', ''), String((e && e.message) || e)); return []; } })); if (!okCount) throw new Error('all cluster feed requests failed');       const map = new Map(); for (const e of settled.flat()) map.set(String(e.login).toLowerCase(), e); recordSeen([...map.values()], 0); globalCache.map = map; globalCache.time = Date.now(); return map; })().finally(() => { globalCache.promise = null; }); return globalCache.promise; };
   const CAMPUS_NAMES_KEY = 'bkk42-campus-names';
   const campusNameCache = { map: null, promise: null };
   const readCampusNames = () => { try { return JSON.parse(localStorage.getItem(CAMPUS_NAMES_KEY) || '{}') || {}; } catch (_) { return {}; } };
@@ -188,7 +174,7 @@
             if (id && cp.name) merged[id] = String(cp.name);
           }
           try { localStorage.setItem(CAMPUS_NAMES_KEY, JSON.stringify(merged)); } catch (_) {}
-        } catch (_) {}
+        } catch (e) { console.warn('[bkk42] campus names failed', String((e && e.message) || e)); }
         return merged;
       })();
     }
@@ -214,18 +200,20 @@
   const ROSTER_MAX_PAGES = 150;
   let lastSeedHits = 0;
   let lastRosterSource = '';
+  let lastRosterFresh = false;
   // Peerfinder parity: their exact hardcoded cursus list (bundle: ke=["42cursus","c-piscine"]) — no discovery.
   const ROSTER_SLUGS = ['42cursus', 'c-piscine'];
   const loadCampusRoster = async (id, onPage, force) => {
     id = Number(id);
+    lastRosterFresh = false;
+    lastRosterSource = ROSTER_SLUGS.join('+');
     let rc = {};
     try { rc = JSON.parse(localStorage.getItem(ROSTER_CACHE_KEY) || '{}') || {}; } catch (_) {}
     if (!force && rc[id] && Date.now() - (rc[id].t || 0) < 86400000 && Array.isArray(rc[id].logins) && rc[id].logins.length) return rc[id].logins;
     if (!readApiToken()) return null;
     const slugs = ROSTER_SLUGS;
-    lastRosterSource = slugs.join('+') || '?';
     const rows = new Map();
-    let totalHint = 0, firstErr = '';
+    let firstErr = '';
     const putRow = (u) => {
       if (!u || typeof u !== 'object' || u['staff?']) return;
       const user = (u.user && typeof u.user === 'object') ? u.user : null;
@@ -245,7 +233,7 @@
         if (!cur.id && uid) cur.id = uid;
       }
     };
-    const progress = () => { if (typeof onPage === 'function') { try { onPage(rows.size, totalHint); } catch (_) {} } };
+    const progress = () => { if (typeof onPage === 'function') { try { onPage(rows.size); } catch (_) {} } };
     for (const slug of slugs) {
       const before = rows.size;
       for (let page = 1; page <= ROSTER_MAX_PAGES; page++) {
@@ -256,13 +244,13 @@
           break;
         }
         if (!Array.isArray(d) || !d.length) break;
-        if (page === 1 && v2LastTotal > 0) totalHint += v2LastTotal;
         for (const u of d) putRow(u);
         progress();
         if (d.length < ROSTER_PAGE_SIZE) break;
       }
     }
     if (!rows.size) throw new Error(firstErr || 'roster empty on all cursus');
+    lastRosterFresh = true;
     const logins = [...rows.keys()];
     try {
       const c = readMetaCache(); const now = Date.now(); let ch = false; lastSeedHits = 0;
@@ -279,7 +267,7 @@
         c[login] = m; ch = true;
         if (m.level != null) lastSeedHits++;
       }
-      if (ch) localStorage.setItem(META_KEY, JSON.stringify(c));
+      if (ch) { for (const k of Object.keys(c)) { if (now - ((c[k] && c[k].t) || 0) > 2592000000) delete c[k]; } localStorage.setItem(META_KEY, JSON.stringify(c)); }
     } catch (_) {}
     try { if (logins.length) { rc[id] = { t: Date.now(), logins }; localStorage.setItem(ROSTER_CACHE_KEY, JSON.stringify(rc)); } } catch (_) {}
     return logins;
@@ -290,9 +278,9 @@
     out.slugs = ROSTER_SLUGS.slice();
     for (const slug of out.slugs) {
       try {
-        const d = await withTimeout(apiV2('/cursus/' + encodeURIComponent(slug) + '/cursus_users?filter[campus_id]=' + id + '&filter[future]=false&page[size]=5&page[number]=1'), 15000);
+        const d = await withTimeout(apiV2('/cursus/' + encodeURIComponent(slug) + '/cursus_users?filter[campus_id]=' + id + '&filter[future]=false&page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=1'), 15000);
         const arr = Array.isArray(d) ? d : [];
-        out.pages[slug] = { ok: true, len: arr.length, total: v2LastTotal, first: arr[0] ? String(((arr[0].user && arr[0].user.login) || arr[0].login) || '') : '', levels: arr.filter((u) => u && u.level != null).length };
+        out.pages[slug] = { ok: true, len: arr.length, first: arr[0] ? String(((arr[0].user && arr[0].user.login) || arr[0].login) || '') : '', levels: arr.filter((u) => u && u.level != null).length };
       } catch (e) { out.pages[slug] = { ok: false, err: String((e && e.message) || e) }; }
     }
     try { console.log('[bkk42-roster-debug]', JSON.stringify(out)); } catch (_) {}
@@ -347,11 +335,11 @@
     if (typeof requestIdleCallback === 'function') requestIdleCallback(() => { runQueue(); }, { timeout: 5000 });
     else setTimeout(() => { runQueue(); }, 1500);
   };
-  const renderCluster = async (root, force) => { root.className = 'bkk42-root'; root.replaceChildren(); const hh = makeHead('Bangkok TH', 'Loading live workstations...'); const total = el('div', 'bkk42-total'); const tn = el('strong', '', '--'); total.append(tn, document.createTextNode(' Online')); const ref = el('button', 'primary', 'Refresh'); ref.type = 'button'; ref.onclick = () => renderCluster(root, true); hh.actions.append(total, ref); root.appendChild(hh.head); try { ref.disabled = true; const locs = await getBangkok(force); const fr = new Set(readFriends()); tn.textContent = String(locs.length); hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const zones = el('div', 'bkk42-zones'); for (let z = 1; z <= 3; z++) { const users = locs.filter((e) => String(e.host).toLowerCase().startsWith('z' + z + 't')); const zone = el('section', 'bkk42-zone'); zone.appendChild(el('h3', '', 'Zone ' + z + ' \u00B7 ' + users.length + ' online')); const tm = new Map(); for (const u of users) { const m2 = String(u.host).match(/^z\d+t(\d+)c(\d+)$/i); if (!m2) continue; const tb = Number(m2[1]); if (!tm.has(tb)) tm.set(tb, new Map()); tm.get(tb).set(Number(m2[2]), u); } if (!tm.size) zone.appendChild(el('div', 'bkk42-empty', 'No active tables')); else { const tables = el('div', 'bkk42-tables'); for (const tt of [...tm].sort((a, b) => a[0] - b[0])) { const table = el('div', 'bkk42-table'); table.appendChild(el('div', 'bkk42-table-title', 'Table T' + tt[0])); const grid = el('div', 'bkk42-chairs'); for (let ch = 1; ch <= 4; ch++) { const u = tt[1].get(ch); const login = u ? String(u.login).toLowerCase() : ''; const seat = el(u ? 'a' : 'div', 'bkk42-seat' + (u && fr.has(login) ? ' friend' : '') + (u ? '' : ' empty')); if (u) { seat.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login); if (u.cdn_uri) { const im = el('img'); im.src = String(u.cdn_uri); im.alt = ''; im.loading = 'lazy'; seat.appendChild(im); } } seat.append(el('span', 'bkk42-host', 'Z' + z + ' \u00B7 T' + tt[0] + ' \u00B7 C' + ch), el('span', 'bkk42-login', u ? login + (fr.has(login) ? ' \u2605' : '') : 'Empty')); if (u) { seat.appendChild(el('span', 'bkk42-sub', agoLabel(u.begin_at, login))); seat.appendChild(makeDotsButton(login)); seat.dataset.login = login; } grid.appendChild(seat); } table.appendChild(grid); tables.appendChild(table); } zone.appendChild(tables); } zones.appendChild(zone); } root.appendChild(zones); enrichCards(root); } catch (_) { hh.note.textContent = 'Live feed unavailable'; root.appendChild(el('div', 'bkk42-error', 'Could not load Bangkok cluster locations.')); } finally { ref.disabled = false; } };
+  const renderCluster = async (root, force) => { const myToken = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1)); const alive = () => root.isConnected && root.dataset.loadToken === myToken; root.className = 'bkk42-root'; root.replaceChildren(); const hh = makeHead('Bangkok TH', 'Loading live workstations...'); const total = el('div', 'bkk42-total'); const tn = el('strong', '', '--'); total.append(tn, document.createTextNode(' Online')); const ref = el('button', 'primary', 'Refresh'); ref.type = 'button'; ref.onclick = () => renderCluster(root, true); hh.actions.append(total, ref); root.appendChild(hh.head); try { ref.disabled = true; const locs = await getBangkok(force); if (!alive()) return; const fr = new Set(readFriends()); tn.textContent = String(locs.length); hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const zones = el('div', 'bkk42-zones'); for (let z = 1; z <= 3; z++) { const users = locs.filter((e) => String(e.host).toLowerCase().startsWith('z' + z + 't')); const zone = el('section', 'bkk42-zone'); zone.appendChild(el('h3', '', 'Zone ' + z + ' \u00B7 ' + users.length + ' online')); const tm = new Map(); for (const u of users) { const m2 = String(u.host).match(/^z\d+t(\d+)c(\d+)$/i); if (!m2) continue; const tb = Number(m2[1]); if (!tm.has(tb)) tm.set(tb, new Map()); tm.get(tb).set(Number(m2[2]), u); } if (!tm.size) zone.appendChild(el('div', 'bkk42-empty', 'No active tables')); else { const tables = el('div', 'bkk42-tables'); for (const tt of [...tm].sort((a, b) => a[0] - b[0])) { const table = el('div', 'bkk42-table'); table.appendChild(el('div', 'bkk42-table-title', 'Table T' + tt[0])); const grid = el('div', 'bkk42-chairs'); for (let ch = 1; ch <= 4; ch++) { const u = tt[1].get(ch); const login = u ? String(u.login).toLowerCase() : ''; const seat = el(u ? 'a' : 'div', 'bkk42-seat' + (u && fr.has(login) ? ' friend' : '') + (u ? '' : ' empty')); if (u) { seat.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login); if (u.cdn_uri) { const im = el('img'); im.src = String(u.cdn_uri); im.alt = ''; im.loading = 'lazy'; seat.appendChild(im); } } seat.append(el('span', 'bkk42-host', 'Z' + z + ' \u00B7 T' + tt[0] + ' \u00B7 C' + ch), el('span', 'bkk42-login', u ? login + (fr.has(login) ? ' \u2605' : '') : 'Empty')); if (u) { seat.appendChild(el('span', 'bkk42-sub', agoLabel(u.begin_at, login))); seat.appendChild(makeDotsButton(login)); seat.dataset.login = login; } grid.appendChild(seat); } table.appendChild(grid); tables.appendChild(table); } zone.appendChild(tables); } zones.appendChild(zone); } root.appendChild(zones); enrichCards(root); } catch (e) { if (alive()) { console.warn('[bkk42] cluster feed failed', String((e && e.message) || e)); hh.note.textContent = 'Live feed unavailable'; root.appendChild(el('div', 'bkk42-error', 'Could not load Bangkok cluster locations.')); } } finally { ref.disabled = false; } };
   const hydrateFriendImages = async (grid) => { let cache = {}; try { cache = JSON.parse(localStorage.getItem(IMAGES_KEY) || '{}') || {}; } catch (_) {} for (const card of [...grid.querySelectorAll('.bkk42-card[data-login]')].slice(0, 30)) { if (!card.isConnected || card.querySelector('img')) continue; const login = card.dataset.login; let u2 = cache[login];       if (!u2 && readApiToken()) { try { const u = await apiV2('/users/' + encodeURIComponent(login)); const cand = (u && (u.image_url || (u.image && u.image.link))) || ''; if (cand) { u2 = String(cand); cache[login] = u2; localStorage.setItem(IMAGES_KEY, JSON.stringify(cache)); } } catch (_) {} } if (u2 && card.isConnected && !card.querySelector('img')) { const im = el('img'); im.src = u2; im.alt = ''; im.loading = 'lazy'; card.querySelector('.bkk42-avatar')?.replaceWith(im); } } };
-  const renderFriends = async (root, force, onCount) => { onCount = onCount || (() => {}); root.className = 'bkk42-root'; root.replaceChildren(); const hh = makeHead('Friends \u00B7 all campuses', 'Checking live locations...'); const man = el('button', '', 'Manage list'); const ref = el('button', 'primary', 'Refresh'); hh.actions.append(man, ref); const ed = el('div', 'bkk42-editor'); const ta = el('textarea'); ta.placeholder = 'login1\nlogin2\nlogin3'; ta.value = readFriends().join('\n'); const row = el('div', 'bkk42-editor-row'); const sv = el('button', 'primary', 'Save list'); row.append(sv, el('span', 'bkk42-hint', 'Separate logins with spaces, commas, or new lines.')); ed.append(ta, row); const grid = el('div', 'bkk42-friends'); root.append(hh.head, ed, grid); man.onclick = () => { ed.classList.toggle('open'); if (ed.classList.contains('open')) ta.focus(); }; ref.onclick = () => renderFriends(root, true, onCount); sv.onclick = () => { writeFriends(parseLogins(ta.value)); renderFriends(root, false, onCount); }; let live = new Map(); try { ref.disabled = true; live = await getGlobalMap(force); hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 all campuses'; } catch (_) { hh.note.textContent = 'Live feed unavailable'; } finally { ref.disabled = false; } const fr = readFriends(); onCount(fr.filter((l) => live.has(l)).length, fr.length); if (!fr.length) grid.appendChild(el('div', 'bkk42-empty', 'No friends yet. Select Manage list to add 42 logins.')); for (const login of fr) { const loc = live.get(login); const card = el('div', 'bkk42-card' + (loc ? ' online' : '')); card.dataset.login = login; if (loc && loc.cdn_uri) { const im = el('img'); im.src = String(loc.cdn_uri); im.alt = ''; im.loading = 'lazy'; card.appendChild(im); } else card.appendChild(el('span', 'bkk42-avatar', '?')); const det = el('div'); const pf = el('a', '', login); pf.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login); const suf = loc && Number(loc.campus_id) !== BANGKOK_CAMPUS_ID ? ' \u00B7 campus ' + loc.campus_id : ''; det.append(pf, el('div', 'bkk42-status', loc ? 'Online \u00B7 ' + String(loc.host).toUpperCase() + suf : 'Offline')); det.appendChild(el('div', 'bkk42-sub', agoLabel(loc && loc.begin_at, login))); det.appendChild(makeDotsButton(login)); card.appendChild(det); grid.appendChild(card); } setTimeout(() => { if (grid.isConnected) hydrateFriendImages(grid); }, 2000); enrichCards(root); };
+  const renderFriends = async (root, force, onCount) => { onCount = onCount || (() => {}); const myToken = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1)); const alive = () => root.isConnected && root.dataset.loadToken === myToken; root.className = 'bkk42-root'; root.replaceChildren(); const hh = makeHead('Friends \u00B7 all campuses', 'Checking live locations...'); const man = el('button', '', 'Manage list'); const ref = el('button', 'primary', 'Refresh'); hh.actions.append(man, ref); const ed = el('div', 'bkk42-editor'); const ta = el('textarea'); ta.placeholder = 'login1\nlogin2\nlogin3'; ta.value = readFriends().join('\n'); const row = el('div', 'bkk42-editor-row'); const sv = el('button', 'primary', 'Save list'); row.append(sv, el('span', 'bkk42-hint', 'Separate logins with spaces, commas, or new lines.')); ed.append(ta, row); const grid = el('div', 'bkk42-friends'); root.append(hh.head, ed, grid); man.onclick = () => { ed.classList.toggle('open'); if (ed.classList.contains('open')) ta.focus(); }; ref.onclick = () => renderFriends(root, true, onCount); sv.onclick = () => { writeFriends(parseLogins(ta.value)); renderFriends(root, false, onCount); }; let live = new Map(); try { ref.disabled = true; live = await getGlobalMap(force); if (!alive()) return; hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 all campuses'; } catch (e) { if (alive()) { console.warn('[bkk42] friends feed failed', String((e && e.message) || e)); hh.note.textContent = 'Live feed unavailable'; } } finally { ref.disabled = false; } if (!alive()) return; const fr = readFriends(); onCount(fr.filter((l) => live.has(l)).length, fr.length); if (!fr.length) grid.appendChild(el('div', 'bkk42-empty', 'No friends yet. Select Manage list to add 42 logins.')); for (const login of fr) { const loc = live.get(login); const card = el('div', 'bkk42-card' + (loc ? ' online' : '')); card.dataset.login = login; if (loc && loc.cdn_uri) { const im = el('img'); im.src = String(loc.cdn_uri); im.alt = ''; im.loading = 'lazy'; card.appendChild(im); } else card.appendChild(el('span', 'bkk42-avatar', '?')); const det = el('div'); const pf = el('a', '', login); pf.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login); const suf = loc && Number(loc.campus_id) !== BANGKOK_CAMPUS_ID ? ' \u00B7 campus ' + loc.campus_id : ''; det.append(pf, el('div', 'bkk42-status', loc ? 'Online \u00B7 ' + String(loc.host).toUpperCase() + suf : 'Offline')); det.appendChild(el('div', 'bkk42-sub', agoLabel(loc && loc.begin_at, login))); det.appendChild(makeDotsButton(login)); card.appendChild(det); grid.appendChild(card); } setTimeout(() => { if (grid.isConnected) hydrateFriendImages(grid); }, 2000); enrichCards(root); };
   const fmtHours = (h) => { if (h == null || !isFinite(h)) return '\u2014h'; const m = Math.round(h * 60); const hh = Math.floor(m / 60); if (hh < 1) return m + 'm'; return hh + 'h ' + (m % 60) + 'm'; };
-  const getLog30d = async (login, loc) => {
+  const getLog30d = async (login) => {
     login = String(login || '').toLowerCase();
     try {
       const c = readMetaCache(); const now = Date.now();
@@ -362,18 +350,14 @@
         if (readApiToken()) {
           const sv = await withTimeout(apiV2('/users/' + encodeURIComponent(login) + '/locations_stats'), 8000);
           const ph = parseV2Stats(sv);
-          if (ph != null) { hours = ph; approx = false; }
+          hours = ph != null ? ph : 0;
+          approx = false;
         }
-      } catch (_) {}
+      } catch (e) { console.warn('[bkk42] locations_stats failed', login, String((e && e.message) || e)); }
 
-      if (hours == null) {
-        const seen = seenTime(readSeen()[login]);
-        const base = seen ? Math.max(0, (now - seen) / 36e5) : 0;
-        const cur = loc && loc.begin_at ? Math.max(0, (now - Date.parse(loc.begin_at)) / 36e5) : 0;
-        hours = Math.min(720, base > 0 ? Math.max(cur, Math.min(60, 720 - base)) : cur);
-        if (!seen && !loc) hours = null;
+      if (hours != null) {
+        try { const cc = readMetaCache(); cc[login] = Object.assign({}, cc[login], { log30d: hours, logApprox: approx, logT: now, t: (cc[login] && cc[login].t) || now }); localStorage.setItem(META_KEY, JSON.stringify(cc)); } catch (_) {}
       }
-      try { const cc = readMetaCache(); cc[login] = Object.assign({}, cc[login], { log30d: hours, logApprox: approx, logT: now, t: (cc[login] && cc[login].t) || now }); localStorage.setItem(META_KEY, JSON.stringify(cc)); } catch (_) {}
       return { hours, approx };
     } catch (_) { return { hours: null, approx: true }; }
   };
@@ -404,7 +388,6 @@
     const tries = [];
     if (uid) {
       tries.push('/users/' + uid + '/locations?sort=-end_at&page[size]=25&page[number]=1');
-      tries.push('/users/' + uid + '/locations?page[size]=5');
     }
     tries.push('/users/' + encodeURIComponent(login) + '/locations?page[size]=5');
     const errs = [];
@@ -436,6 +419,7 @@
     document.head.appendChild(st);
   };
   let sessToken = 0;
+  let sessEsc = null;
   const sessWhen = (s) => {
     const parts = [];
     if (s.begin) { const t = Date.parse(s.begin); if (!isNaN(t)) parts.push('started ' + fmtAgo(Date.now() - t) + ' ago'); }
@@ -444,7 +428,7 @@
     if (s.begin && s.end) { const d = Date.parse(s.end) - Date.parse(s.begin); if (d > 0) parts.push('~' + fmtAgo(d)); }
     return parts.join(' · ');
   };
-  const closeSessionsModal = () => { sessToken++; document.querySelectorAll('.bkk42-sess-back').forEach((n) => n.remove()); };
+  const closeSessionsModal = () => { sessToken++; if (sessEsc) { document.removeEventListener('keydown', sessEsc); sessEsc = null; } document.querySelectorAll('.bkk42-sess-back').forEach((n) => n.remove()); };
   const openSessionsModal = async (login) => {
     login = String(login || '').toLowerCase();
     if (!login) return;
@@ -462,7 +446,8 @@
     box.append(head, body); back.appendChild(box);
     back.addEventListener('click', (e) => { if (e.target === back) closeSessionsModal(); });
     document.body.appendChild(back);
-    const esc = (e) => { if (e.key === 'Escape') { closeSessionsModal(); document.removeEventListener('keydown', esc); } };
+    const esc = (e) => { if (e.key === 'Escape') closeSessionsModal(); };
+    sessEsc = esc;
     document.addEventListener('keydown', esc);
     if (!readApiToken()) {
       if (my !== sessToken || !back.isConnected) return;
@@ -568,6 +553,7 @@
     imp.append(ta, irow, trow, srow); root.appendChild(imp);
     const list = el('div', 'bkk42-zones'); root.appendChild(list);
     const passPresence = (m2) => presence === 'all' || (presence === 'online' ? !!m2.loc : !m2.loc);
+    let seenSnap = readSeen();
     const passBatch = (m2) => { const bn = (m2.meta && m2.meta.batchN) || 0; if (batch === 'all') return true; if (batch === 'new') return !bn; return String(bn) === batch; };
     const sortMetas = (arr) => { if (mode === 'active') arr.sort((a, b) => (((b.log && b.log.hours) == null) ? -1 : b.log.hours) - (((a.log && a.log.hours) == null) ? -1 : a.log.hours)); else arr.sort((a, b) => ((b.meta.level == null ? -1 : b.meta.level) - (a.meta.level == null ? -1 : a.meta.level))); };
     const rowSub = (row) => {
@@ -578,9 +564,10 @@
         const when = isNaN(t) ? '' : fmtAgo(Date.now() - t) + ' ago';
         return 'Last seen ' + (when || 'a while ago') + (ll.host ? ' \u00B7 ' + ll.host : '');
       }
-      return 'Offline \u00B7 ' + agoLabel(null, row.login);
+      return 'Offline \u00B7 ' + agoLabel(null, row.login, seenSnap);
     };
     const drawList = (metas) => {
+      seenSnap = readSeen();
       list.replaceChildren();
       const groups = new Map();
       for (const m2 of metas) { if (!passPresence(m2) || !passBatch(m2)) continue; const key = (m2.meta && m2.meta.batchN) || 0; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(m2); }
@@ -590,17 +577,19 @@
         const label = k ? '#' + k : 'Unknown batch';
         const sec = el('section', 'bkk42-zone');
         const cap = 30;
-        sec.appendChild(el('h3', '', label + ' \u00B7 ' + arr.length + (arr.length > cap ? ' (top ' + cap + ')' : '')));
+        const h3 = el('h3', '', label + ' \u00B7 ' + arr.length + (arr.length > cap ? ' (top ' + cap + ')' : ''));
+        sec.appendChild(h3);
         const lw = el('div', 'bkk42-zones');
         const showAll = el('button', '', 'Show all ' + arr.length); showAll.type = 'button';
         const draw = (lim) => {
+          h3.textContent = label + ' \u00B7 ' + arr.length + (lim < arr.length ? ' (top ' + cap + ')' : '');
           lw.replaceChildren();
           arr.slice(0, lim).forEach((row, idx) => {
             const r = el('div', 'bkk42-rank');
             const a = el('a', '', (idx + 1) + '. ' + row.login + (row.loc ? '' : ' \u00B7 off'));
             a.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(row.login); a.style.color = '#fff';
             const wrap = el('span');
-            if (mode === 'active') { const pre = row.log && row.log.approx ? '~' : ''; wrap.append(el('span', 'bkk42-lv', pre + fmtHours(row.log ? row.log.hours : null) + ' \u00B730d'), el('div', 'bkk42-sub', (row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) + ' \u00B7 ' : '') + rowSub(row))); }
+            if (mode === 'active') { const pre = (row.log && row.log.hours != null && row.log.approx) ? '~' : ''; wrap.append(el('span', 'bkk42-lv', pre + fmtHours(row.log ? row.log.hours : null) + ' \u00B7 30d'), el('div', 'bkk42-sub', (row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) + ' \u00B7 ' : '') + rowSub(row))); }
             else wrap.append(el('span', 'bkk42-lv', row.meta.level != null ? 'Lv ' + Number(row.meta.level).toFixed(2) : 'Lv \u2022\u2022\u2022'), el('div', 'bkk42-sub', rowSub(row)));
             wrap.appendChild(makeDotsButton(row.login));
             r.append(el('b', '', '#' + (idx + 1)), a, wrap); lw.appendChild(r);
@@ -635,7 +624,8 @@
       for (const id of ACTIVE_CAMPUSES.filter((x) => x !== BANGKOK_CAMPUS_ID)) mk(String(id), (known && known[id]) || ('Campus ' + id));
       campusSel.value = campus;
     };
-    const stampDone = (n) => { hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 ' + n + ' known \u00B7 ' + scopeNote; };
+    let feedFailed = false;
+    const stampDone = (n) => { hh.note.textContent = (feedFailed ? 'Live feed unavailable \u00B7 ' : 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 ') + n + ' known \u00B7 ' + scopeNote; };
     let locs = []; let scopeNote = 'Bangkok';
     if (!readApiToken()) {
       hh.note.textContent = 'Leaderboard needs login';
@@ -647,11 +637,10 @@
       else if (Number(campus) === BANGKOK_CAMPUS_ID) { locs = await getBangkok(force); scopeNote = 'Bangkok'; }
       else { locs = await getCampusCluster(campus, force); scopeNote = STATIC_CAMPUS_NAMES[Number(campus)] || ('Campus ' + campus); }
     }
-    catch (_) { hh.note.textContent = 'Live feed unavailable \u00B7 showing cached'; }
+    catch (_) { feedFailed = true; hh.note.textContent = 'Live feed unavailable \u00B7 showing cached'; }
     if (!alive()) return;
     const online = new Map(locs.map((e) => [String(e.login).toLowerCase(), e]));
     const onlineKeys = [...online.keys()];
-    const fullSet = new Set();
     const snapOf = () => readMetaCache();
     let metas;
     if (campus === 'all') {
@@ -676,20 +665,17 @@
           const snap = snapOf();
           let added = 0;
           for (const l of extra) {
-            fullSet.add(l);
             if (!have.has(l)) { have.add(l); metas.push({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }); added++; }
           }
           if (added) {
-            scopeNote += ' · full roster (' + lastSeedHits + ' levels via ' + (lastRosterSource || '?') + ')';
+            scopeNote += ' · full roster (' + (lastRosterFresh ? lastSeedHits + ' levels' : 'cached') + ')';
             fillBatches(metas); drawList(metas);
           }
-        } else if (readApiToken()) {
-          scopeNote += ' · roster empty (no error info)';
         }
       } catch (e) { scopeNote += ' · roster failed (' + String((e && e.message) || e || 'error') + ')'; }
     }
     loadCampusNames().then((names) => { if (alive()) fillCampus(names); });
-    const pending = () => metas.filter((m) => !isFresh(m));
+    const pending = () => metas.filter((m) => !isFresh(m) || (mode === 'active' && m.log === undefined));
     const loadMissing = async () => {
       const limN = limitSel.value === 'all' ? Infinity : Number(limitSel.value);
       const queue = pending().slice(0, limN);
@@ -702,43 +688,46 @@
           if (!alive()) return;
           m2.meta = await getUserMeta(m2.login);
           if (!m2.loc && m2.lastLoc === undefined) m2.lastLoc = await getLastLocation(m2.login);
-          if (mode === 'active' && m2.log === undefined) m2.log = await getLog30d(m2.login, m2.loc);
+          if (mode === 'active' && m2.log === undefined) m2.log = await getLog30d(m2.login);
         }));
         if (!alive()) { ref.disabled = false; return; }
         done = Math.min(queue.length, i + 4);
         fillBatches(metas); drawList(metas);
         hh.note.textContent = 'Loading details ' + done + '/' + queue.length + '...';
-        await new Promise((r) => setTimeout(r, 150));
+        if (i + 4 < queue.length) await new Promise((r) => setTimeout(r, 150));
       }
       ref.disabled = false;
       if (!alive()) return;
       stopBtn.hidden = true;
       const left = pending().length;
-      if (left) { loadBtn.textContent = 'Load details (' + left + ' new)'; loadBtn.hidden = false; }
+      if (left) { loadBtn.textContent = mode === 'active' ? 'Load activity (' + left + ' left)' : 'Load details (' + left + ' new)'; loadBtn.hidden = false; }
       stampDone(metas.length);
     };
     loadBtn.onclick = () => { loadMissing(); };
     if (mode === 'active') {
-      stopBtn.hidden = false; ref.disabled = true;
-      for (let i = 0; i < metas.length; i += 4) {
-        if (!alive()) { ref.disabled = false; return; }
-        await Promise.all(metas.slice(i, i + 4).map(async (m2) => { if (m2.log === undefined) m2.log = await getLog30d(m2.login, m2.loc); }));
-        if (!alive()) { ref.disabled = false; return; }
-        drawList(metas);
-        hh.note.textContent = 'Loading activity ' + Math.min(metas.length, i + 4) + '/' + metas.length + '...';
-        await new Promise((r) => setTimeout(r, 150));
+      const actLim = limitSel.value === 'all' ? Infinity : Number(limitSel.value);
+      const actQ = metas.filter((m2) => m2.log === undefined).slice(0, actLim);
+      if (actQ.length) {
+        stopBtn.hidden = false; ref.disabled = true;
+        for (let i = 0; i < actQ.length; i += 4) {
+          if (!alive()) { ref.disabled = false; return; }
+          await Promise.all(actQ.slice(i, i + 4).map(async (m2) => { if (m2.log === undefined) m2.log = await getLog30d(m2.login); }));
+          if (!alive()) { ref.disabled = false; return; }
+          drawList(metas);
+          hh.note.textContent = 'Loading activity ' + Math.min(actQ.length, i + 4) + '/' + actQ.length + '...';
+          if (i + 4 < actQ.length) await new Promise((r) => setTimeout(r, 150));
+        }
+        ref.disabled = false;
+        if (!alive()) return;
+        stopBtn.hidden = true;
       }
-      ref.disabled = false;
-      if (!alive()) return;
-      stopBtn.hidden = true;
     }
     const missing = pending().length;
-    if (missing) { loadBtn.textContent = 'Load details (' + missing + ' new)'; loadBtn.hidden = false; }
+    if (missing) { loadBtn.textContent = mode === 'active' ? 'Load activity (' + missing + ' left)' : 'Load details (' + missing + ' new)'; loadBtn.hidden = false; }
     stampDone(metas.length);
-    if (campus !== 'all' && !readApiToken()) hh.note.textContent += ' · paste API token for full roster';
-    else if (campus !== 'all' && apiStatus.ok === false) hh.note.textContent += ' · API token rejected — Login with 42 again';
+    if (campus !== 'all' && apiStatus.ok === false) hh.note.textContent += ' · API token rejected — Login with 42 again';
   };
-  const createModal = () => { const ex = document.getElementById(ID.modal); if (ex && ex.openView) return ex; if (ex) ex.remove(); const mo = el('div'); mo.id = ID.modal; mo.hidden = true; const sh = el('section', 'bkk42-shell'); const bar = el('header', 'bkk42-bar'); const nv = el('nav', 'bkk42-nav'); const cb = el('button', 'active', 'Bangkok TH'); cb.type = 'button'; const fb = el('button', '', 'Friends'); fb.type = 'button'; const tb = el('button', '', 'Leaderboard'); tb.type = 'button'; const cl = el('button', 'bkk42-close', '\u00D7'); cl.type = 'button'; cl.setAttribute('aria-label', 'Close'); nv.append(cb, fb, tb); bar.append(el('div', 'bkk42-brand', '42 Bangkok'), nv, cl); const body = el('main', 'bkk42-modal-body'); const cv = el('section', 'bkk42-view'); const fv2 = el('section', 'bkk42-view'); fv2.hidden = true; const tv = el('section', 'bkk42-view'); tv.hidden = true; body.append(cv, fv2, tv); sh.append(bar, body); mo.appendChild(sh); document.body.appendChild(mo); const show = (n) => { cb.classList.toggle('active', n === 'cluster'); fb.classList.toggle('active', n === 'friends'); tb.classList.toggle('active', n === 'top'); cv.hidden = n !== 'cluster'; fv2.hidden = n !== 'friends'; tv.hidden = n !== 'top'; if (n === 'friends') renderFriends(fv2, false, (o, t2) => { fb.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); }); else if (n === 'top') renderTop(tv, false); else renderCluster(cv); }; cb.onclick = () => show('cluster'); fb.onclick = () => show('friends'); tb.onclick = () => show('top'); cl.onclick = () => { mo.hidden = true; }; mo.addEventListener('click', (e) => { if (e.target === mo) mo.hidden = true; });     mo.openView = (n) => { mo.hidden = false; show(n); }; 
+  const createModal = () => { const ex = document.getElementById(ID.modal); if (ex && ex.openView) return ex; if (ex) ex.remove(); const mo = el('div'); mo.id = ID.modal; mo.hidden = true; const sh = el('section', 'bkk42-shell'); const bar = el('header', 'bkk42-bar'); const nv = el('nav', 'bkk42-nav'); const cb = el('button', 'active', 'Bangkok TH'); cb.type = 'button'; const fb = el('button', '', 'Friends'); fb.type = 'button'; const tb = el('button', '', 'Leaderboard'); tb.type = 'button'; const cl = el('button', 'bkk42-close', '\u00D7'); cl.type = 'button'; cl.setAttribute('aria-label', 'Close'); nv.append(cb, fb, tb); bar.append(el('div', 'bkk42-brand', '42 Bangkok'), nv, cl); const body = el('main', 'bkk42-modal-body'); const cv = el('section', 'bkk42-view'); const fv2 = el('section', 'bkk42-view'); fv2.hidden = true; const tv = el('section', 'bkk42-view'); tv.hidden = true; body.append(cv, fv2, tv); sh.append(bar, body); mo.appendChild(sh); document.body.appendChild(mo); const show = (n) => { cb.classList.toggle('active', n === 'cluster'); fb.classList.toggle('active', n === 'friends'); tb.classList.toggle('active', n === 'top'); cv.hidden = n !== 'cluster'; fv2.hidden = n !== 'friends'; tv.hidden = n !== 'top'; if (n === 'friends') renderFriends(fv2, false, (o, t2) => { fb.textContent = 'Friends' + (t2 ? ' (' + o + '/' + t2 + ')' : ''); }); else if (n === 'top') renderTop(tv, false); else renderCluster(cv); }; cb.onclick = () => show('cluster'); fb.onclick = () => show('friends'); tb.onclick = () => show('top'); cl.onclick = () => { mo.hidden = true; }; mo.addEventListener('click', (e) => { if (e.target === mo) mo.hidden = true; });     mo.openView = (n) => { mo.hidden = false; show(n); }; 
     const rerenderTop = () => { try { if (!mo.hidden && !tv.hidden) renderTop(tv, false); } catch (_) {} };
     window.addEventListener('storage', (ev) => {
       if (!ev || (ev.key !== API_TOKEN_KEY && ev.key !== 'bkk42-oauth-last')) return;
@@ -746,7 +735,7 @@
     });
     try { if (typeof GM_addValueChangeListener !== 'undefined') { GM_addValueChangeListener(API_TOKEN_KEY, rerenderTop); GM_addValueChangeListener('bkk42-oauth-last', rerenderTop); } } catch (_) {}
     return mo; };
-  const mountMeta = () => { const done = document.getElementById(ID.clusterTab)?.isConnected && document.getElementById(ID.clusterPane)?.isConnected && document.getElementById(ID.friendsTab)?.isConnected && document.getElementById(ID.friendsPane)?.isConnected && document.getElementById(ID.topTab)?.isConnected && document.getElementById(ID.topPane)?.isConnected; if (done) return true; const nv = document.querySelector('#main-container'); const ct = document.querySelector('#cluster-map .tab-content'); if (!nv || !ct) return false; [ID.clusterTab, ID.friendsTab, ID.topTab, ID.clusterPane, ID.friendsPane, ID.topPane, 'bi-friends-style'].forEach((id) => document.getElementById(id)?.remove()); const add = (tid, pid, label, render) => { const it = el('li'); it.id = tid; it.setAttribute('role', 'presentation'); const lk = el('a', '', label); lk.href = '#' + pid; lk.dataset.toggle = 'tab'; lk.setAttribute('role', 'tab'); const pn = el('div', 'tab-pane'); pn.id = pid; pn.setAttribute('role', 'tabpanel'); lk.addEventListener('click', () => render(pn)); it.appendChild(lk); nv.insertBefore(it, document.getElementById('cluster-shadow-host') || null); ct.appendChild(pn); return { link: lk, pane: pn }; }; add(ID.clusterTab, ID.clusterPane, 'Bangkok TH', (p) => renderCluster(p)); const fr2 = add(ID.friendsTab, ID.friendsPane, 'Friends', (p) => renderFriends(p, false, (o, t2) => { fr2.link.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); })); add(ID.topTab, ID.topPane, 'Leaderboard', (p) => renderTop(p)); return true; };
+  const mountMeta = () => { const done = document.getElementById(ID.clusterTab)?.isConnected && document.getElementById(ID.clusterPane)?.isConnected && document.getElementById(ID.friendsTab)?.isConnected && document.getElementById(ID.friendsPane)?.isConnected && document.getElementById(ID.topTab)?.isConnected && document.getElementById(ID.topPane)?.isConnected; if (done) return true; const nv = document.querySelector('#main-container'); const ct = document.querySelector('#cluster-map .tab-content'); if (!nv || !ct) return false; [ID.clusterTab, ID.friendsTab, ID.topTab, ID.clusterPane, ID.friendsPane, ID.topPane, 'bi-friends-style'].forEach((id) => document.getElementById(id)?.remove()); const add = (tid, pid, label, render) => { const it = el('li'); it.id = tid; it.setAttribute('role', 'presentation'); const lk = el('a', '', label); lk.href = '#' + pid; lk.dataset.toggle = 'tab'; lk.setAttribute('role', 'tab'); const pn = el('div', 'tab-pane'); pn.id = pid; pn.setAttribute('role', 'tabpanel'); lk.addEventListener('click', () => render(pn)); it.appendChild(lk); nv.insertBefore(it, document.getElementById('cluster-shadow-host') || null); ct.appendChild(pn); return { link: lk, pane: pn }; }; add(ID.clusterTab, ID.clusterPane, 'Bangkok TH', (p) => renderCluster(p)); const fr2 = add(ID.friendsTab, ID.friendsPane, 'Friends', (p) => renderFriends(p, false, (o, t2) => { fr2.link.textContent = 'Friends' + (t2 ? ' (' + o + '/' + t2 + ')' : ''); })); add(ID.topTab, ID.topPane, 'Leaderboard', (p) => renderTop(p)); return true; };
   const ensureFloatButton = () => { let f = document.getElementById(ID.float); if (!f) { f = el('button', '', 'TH'); f.id = ID.float; f.type = 'button'; f.title = 'Bangkok TH cluster'; f.setAttribute('aria-label', 'Open Bangkok TH cluster'); f.addEventListener('click', (e) => { e.preventDefault(); createModal().openView('cluster'); }); document.body.appendChild(f); } return true; };
 
 
@@ -773,7 +762,7 @@
     await probe('bangkok-feed', () => getBangkok(true));
     if (out.token) {
       await probe('v2-campus', () => apiV2('/campus/33'));
-      await probe('v2-roster-page', () => apiV2('/campus/33/users?page[size]=5&page[number]=1'));
+      await probe('v2-roster-page', () => apiV2('/cursus/42cursus/cursus_users?filter[campus_id]=33&filter[future]=false&page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=1'));
     }
     try { console.log('[bkk42-diag]', JSON.stringify(out)); } catch (_) {}
     return out;
