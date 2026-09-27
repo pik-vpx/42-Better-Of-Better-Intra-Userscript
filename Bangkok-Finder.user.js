@@ -16,8 +16,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.12
-// @changelog    Peerfinder-paced roster: progressive paint, cluster-only board, primary-campus source.
+// @version      2.6.13
+// @changelog    Peerfinder-shaped roster: per-cursus bulk fetch with totals; sorted sessions.
 // ==/UserScript==
 
 
@@ -70,6 +70,13 @@
   const readApiStore = () => { try { const raw = gmGet(API_TOKEN_KEY, ''); if (!raw) return {}; const o = JSON.parse(raw); if (o && typeof o === 'object' && !Array.isArray(o)) return o; return { a: raw }; } catch (_) { const fb = gmGet(API_TOKEN_KEY, ''); return fb ? { a: fb } : {}; } };
   const writeApiStore = (o) => gmSet(API_TOKEN_KEY, JSON.stringify(o));
   const v2Starts = [];
+  let v2LastTotal = 0;
+  const noteV2Total = (headers) => {
+    try {
+      const m = String(headers || '').match(/^x-total:\s*(\d+)/mi);
+      if (m) v2LastTotal = Number(m[1]);
+    } catch (_) {}
+  };
   const v2Slot = async () => {
     for (;;) {
       const now = Date.now();
@@ -120,11 +127,12 @@
     const tk = readApiToken();
     if (!tk) throw new Error('no token');
     const url = 'https://api.intra.42.fr/v2' + path;
-    if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, headers: { Authorization: 'Bearer ' + tk, Accept: 'application/json' }, responseType: 'json', timeout: 15000, onload: (r) => { if (r.status === 401 || r.status === 403) { apiStatus.ok = false; return rej(new Error('HTTP ' + r.status + ' bad token')); } if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); apiStatus.ok = true; try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) }));
+    if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, headers: { Authorization: 'Bearer ' + tk, Accept: 'application/json' }, responseType: 'json', timeout: 15000, onload: (r) => { try { noteV2Total(r && r.responseHeaders); } catch (_) {} if (r.status === 401 || r.status === 403) { apiStatus.ok = false; return rej(new Error('HTTP ' + r.status + ' bad token')); } if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); apiStatus.ok = true; try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) }));
     const r = await withTimeout(fetch(url, { headers: { Authorization: 'Bearer ' + tk, Accept: 'application/json' } }), 15000);
     if (r.status === 401 || r.status === 403) { apiStatus.ok = false; throw new Error('HTTP ' + r.status + ' bad token'); }
     if (!r.ok) throw new Error('HTTP ' + r.status);
     apiStatus.ok = true;
+    try { const ht = Number(r.headers.get('x-total')); if (ht > 0) v2LastTotal = ht; } catch (_) {}
     return r.json();
   };
   const parseV2Stats = (s) => {
@@ -206,27 +214,18 @@
   const ROSTER_MAX_PAGES = 30;
   let lastSeedHits = 0;
   let lastRosterSource = '';
-  // Bulk roster sources, first page-1 with data wins. Shapes differ per endpoint.
-  const ROSTER_SOURCES = [
-    { name: 'campus-users', path: (id, p) => '/campus/' + id + '/users?page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=' + p },
-    { name: 'users-filter', path: (id, p) => '/users?filter[primary_campus_id]=' + id + '&filter[kind]=student&page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=' + p },
-    { name: 'cursus-users', path: (id, p) => '/cursus_users?filter[campus_id]=' + id + '&page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=' + p },
-  ];
-  const seedFromRosterItem = (u, only42) => {
-    if (!u || typeof u !== 'object') return null;
-    if (u['staff?']) return null;
-    if (u.user && typeof u.user === 'object') {
-      const login = String(u.user.login || '').toLowerCase();
-      if (!/^[a-z0-9_-]{2,30}$/.test(login)) return null;
-      const slug = (u.cursus && u.cursus.slug) || '';
-      if (only42 && slug && slug !== '42cursus') return null;
-      return { login, id: u.user.id || 0, level: u.level != null ? Number(u.level) : null, begin: u.begin_at || u.created_at || '', auth: slug === '42cursus' };
-    }
-    const login = String(u.login || '').toLowerCase();
-    if (!/^[a-z0-9_-]{2,30}$/.test(login)) return null;
-    const cus = Array.isArray(u.cursus_users) ? u.cursus_users : [];
-    const main = cus.find((e) => e && e.cursus && e.cursus.slug === '42cursus') || null;
-    return { login, id: u.id || 0, level: main && main.level != null ? Number(main.level) : null, begin: (main && (main.begin_at || main.created_at)) || '', auth: true };
+  // Peerfinder-shaped bulk roster: per-cursus pages, deduped by user, totals from x-total.
+  const ROSTER_SLUG_FALLBACK = ['42cursus', 'c-piscine'];
+  const discoverRosterSlugs = async () => {
+    try {
+      const d = await withTimeout(apiV2('/cursus?page[size]=100'), 15000);
+      const slugs = (Array.isArray(d) ? d : []).map((c) => c && c.slug).filter(Boolean);
+      const out = [];
+      if (slugs.includes('42cursus')) out.push('42cursus');
+      for (const s of slugs) { if (s !== '42cursus' && /piscine/i.test(s) && !out.includes(s)) out.push(s); }
+      if (out.length) return out;
+    } catch (_) {}
+    return ROSTER_SLUG_FALLBACK.slice();
   };
   const loadCampusRoster = async (id, onPage) => {
     id = Number(id);
@@ -234,61 +233,51 @@
     try { rc = JSON.parse(localStorage.getItem(ROSTER_CACHE_KEY) || '{}') || {}; } catch (_) {}
     if (rc[id] && Date.now() - (rc[id].t || 0) < 86400000 && Array.isArray(rc[id].logins) && rc[id].logins.length) return rc[id].logins;
     if (!readApiToken()) return null;
-    let src = null, firstPage = null, firstErr = '';
-    {
-      let bestScore = -1;
-      for (const s of ROSTER_SOURCES) {
+    const slugs = await discoverRosterSlugs();
+    lastRosterSource = slugs.join('+') || '?';
+    const rows = new Map();
+    let totalHint = 0, firstErr = '';
+    const putRow = (u) => {
+      if (!u || typeof u !== 'object' || u['staff?']) return;
+      const user = (u.user && typeof u.user === 'object') ? u.user : null;
+      const login = String((user && user.login) || u.login || '').toLowerCase();
+      if (!/^[a-z0-9_-]{2,30}$/.test(login)) return;
+      const begin = u.begin_at || u.created_at || '';
+      const t = begin ? Date.parse(begin) : NaN;
+      const level = u.level != null ? Number(u.level) : null;
+      const uid = (user && user.id) || u.id || 0;
+      const cur = rows.get(login);
+      if (!cur) { rows.set(login, { id: uid, level, begin }); return; }
+      const curT = cur.begin ? Date.parse(cur.begin) : NaN;
+      if (!isNaN(t) && (isNaN(curT) || t > curT)) rows.set(login, { id: uid || cur.id, level: level != null ? level : cur.level, begin });
+      else {
+        if (cur.level == null && level != null) cur.level = level;
+        if (!cur.begin && begin) cur.begin = begin;
+        if (!cur.id && uid) cur.id = uid;
+      }
+    };
+    const progress = () => { if (typeof onPage === 'function') { try { onPage(rows.size, totalHint); } catch (_) {} } };
+    for (const slug of slugs) {
+      const before = rows.size;
+      for (let page = 1; page <= ROSTER_MAX_PAGES; page++) {
         let d = null;
-        try { d = await withTimeout(apiV2(s.path(id, 1)), 20000); }
-        catch (e) { if (!firstErr) firstErr = s.name + ': ' + String((e && e.message) || e); continue; }
-        if (!Array.isArray(d) || !d.length) continue;
-        let score = 0;
-        for (const u of d) {
-          if (u && (u.level != null || (Array.isArray(u.cursus_users) && u.cursus_users.length))) score++;
+        try { d = await withTimeout(apiV2('/cursus/' + encodeURIComponent(slug) + '/cursus_users?filter[campus_id]=' + id + '&filter[future]=false&page[size]=' + ROSTER_PAGE_SIZE + '&page[number]=' + page), 20000); }
+        catch (e) {
+          if (page === 1 && rows.size === before && !firstErr) firstErr = slug + ': ' + String((e && e.message) || e);
+          break;
         }
-        if (score > bestScore) { bestScore = score; src = s; firstPage = d; }
-      }
-    }
-    if (!src) throw new Error(firstErr || 'all roster sources empty');
-    lastRosterSource = src.name;
-    const seedMap = new Map();
-    const putSeed = (login, seed) => {
-      const cur = seedMap.get(login);
-      if (!cur) { seedMap.set(login, { id: seed.id, level: seed.level, begin: seed.begin, auth: !!seed.auth }); return; }
-      if (seed.auth && !cur.auth) {
-        seedMap.set(login, { id: seed.id || cur.id, level: seed.level != null ? seed.level : cur.level, begin: seed.begin || cur.begin, auth: true });
-        return;
-      }
-      if (!!seed.auth === !!cur.auth) {
-        if (cur.level == null && seed.level != null) cur.level = seed.level;
-        if (!cur.begin && seed.begin) cur.begin = seed.begin;
-        if (!cur.id && seed.id) cur.id = seed.id;
-      }
-    };
-    const ingest = (arr) => {
-      const only42 = src.name === 'cursus-users';
-      for (const u of arr || []) {
-        const s = seedFromRosterItem(u, only42);
-        if (s) putSeed(s.login, s);
-      }
-    };
-    ingest(firstPage);
-    if (typeof onPage === 'function') { try { onPage(seedMap.size); } catch (_) {} }
-    if (firstPage.length >= ROSTER_PAGE_SIZE) {
-      for (let page = 2; page <= ROSTER_MAX_PAGES; page++) {
-        let d = null;
-        try { d = await withTimeout(apiV2(src.path(id, page)), 20000); }
-        catch (_) { break; }
         if (!Array.isArray(d) || !d.length) break;
-        ingest(d);
-        if (typeof onPage === 'function') { try { onPage(seedMap.size); } catch (_) {} }
+        if (page === 1 && v2LastTotal > 0) totalHint += v2LastTotal;
+        for (const u of d) putRow(u);
+        progress();
         if (d.length < ROSTER_PAGE_SIZE) break;
       }
     }
-    const logins = [...seedMap.keys()];
+    if (!rows.size) throw new Error(firstErr || 'roster empty on all cursus');
+    const logins = [...rows.keys()];
     try {
       const c = readMetaCache(); const now = Date.now(); let ch = false; lastSeedHits = 0;
-      for (const [login, s] of seedMap) {
+      for (const [login, s] of rows) {
         const prev = c[login] || {};
         const m = {
           id: s.id || prev.id || 0,
@@ -308,13 +297,14 @@
   };
   const bkk42RosterDebug = async (id) => {
     id = Number(id) || BANGKOK_CAMPUS_ID;
-    const out = { id, token: !!readApiToken(), source: lastRosterSource || '', pages: {} };
-    for (const s of ROSTER_SOURCES) {
+    const out = { id, token: !!readApiToken(), source: lastRosterSource || '', slugs: [], pages: {} };
+    try { out.slugs = await discoverRosterSlugs(); } catch (_) { out.slugs = ROSTER_SLUG_FALLBACK.slice(); }
+    for (const slug of out.slugs) {
       try {
-        const d = await withTimeout(apiV2(s.path(id, 1)), 15000);
+        const d = await withTimeout(apiV2('/cursus/' + encodeURIComponent(slug) + '/cursus_users?filter[campus_id]=' + id + '&filter[future]=false&page[size]=5&page[number]=1'), 15000);
         const arr = Array.isArray(d) ? d : [];
-        out.pages[s.name] = { ok: true, len: arr.length, first: arr[0] ? String((arr[0].user && arr[0].user.login) || arr[0].login || '') : '', cursus: arr.filter((u) => u && (u.level != null || (Array.isArray(u.cursus_users) && u.cursus_users.length))).length };
-      } catch (e) { out.pages[s.name] = { ok: false, err: String((e && e.message) || e) }; }
+        out.pages[slug] = { ok: true, len: arr.length, total: v2LastTotal, first: arr[0] ? String(((arr[0].user && arr[0].user.login) || arr[0].login) || '') : '', levels: arr.filter((u) => u && u.level != null).length };
+      } catch (e) { out.pages[slug] = { ok: false, err: String((e && e.message) || e) }; }
     }
     try { console.log('[bkk42-roster-debug]', JSON.stringify(out)); } catch (_) {}
     return out;
@@ -416,7 +406,7 @@
     }
     if (!readApiToken()) return legacy || (Array.isArray(hit && hit.sessions) ? hit.sessions : []);
     try {
-      const d = await withTimeout(apiV2('/users/' + encodeURIComponent(login) + '/locations?page[size]=5'), 10000);
+      const d = await withTimeout(apiV2('/users/' + encodeURIComponent(login) + '/locations?sort=-end_at&page[size]=25'), 10000);
       const arr = (Array.isArray(d) ? d : [])
         .filter((L) => L && (L.begin_at || L.created_at))
         .sort((a, b) => Date.parse(b.begin_at || b.created_at) - Date.parse(a.begin_at || a.created_at))
@@ -496,7 +486,7 @@
       return;
     }
     if (!sessions.length) { body.appendChild(el('div', 'bkk42-empty', 'No recorded sessions')); return; }
-    sessions.forEach((s) => {
+    sessions.slice(0, 5).forEach((s) => {
       const row = el('div', 'bkk42-sess-row' + (!s.end ? ' live' : ''));
       row.append(el('span', 'bkk42-sess-dot'), el('b', '', s.host || '?'), el('span', 'bkk42-sub', sessWhen(s)));
       body.appendChild(row);
@@ -676,9 +666,9 @@
     if (campus !== 'all' && readApiToken()) {
       hh.note.textContent = 'Loading students…';
       try {
-        const extra = await withTimeout(loadCampusRoster(Number(campus), (n) => {
+        const extra = await withTimeout(loadCampusRoster(Number(campus), (n, total) => {
           if (!alive()) return;
-          hh.note.textContent = 'Loading students… ' + n + ' found — browsing available';
+          hh.note.textContent = 'Loading students… ' + n + (total > 0 ? ' of ' + total : '') + ' found — browsing available';
         }), 120000);
         if (!alive()) return;
         if (extra && extra.length) {
