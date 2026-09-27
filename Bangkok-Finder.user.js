@@ -13,8 +13,8 @@
 // @connect      pace-system.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.2.4
-// @changelog    Scope leaderboard roster to selected campus so switching campuses visibly changes results.
+// @version      2.2.5
+// @changelog    Verified campus names from Better Intra campus data, no more Campus-id guessing.
 // ==/UserScript==
 
 
@@ -53,26 +53,14 @@
   const CAMPUS_NAMES_KEY = 'bkk42-campus-names';
   const campusNameCache = { map: null, promise: null };
   const readCampusNames = () => { try { return JSON.parse(localStorage.getItem(CAMPUS_NAMES_KEY) || '{}') || {}; } catch (_) { return {}; } };
+  // Campus names from Better Intra's public campuses.json (MIT) — Bangkok pinned, rest fall back to Campus {id}.
+  const STATIC_CAMPUS_NAMES = { 9: 'Lyon', 12: 'Belgium', 16: 'Khouribga', 17: 'Moscow', 21: 'Benguerir', 22: 'Madrid', 23: 'Kazan', 26: 'Tokyo', 29: 'Seoul', 30: 'Rome', 31: 'Angouleme', 32: 'Yerevan', 33: 'Bangkok', 34: 'Kuala Lumpur', 35: 'Amman', 37: 'Malaga', 39: 'Heilbronn', 40: 'Urduliz', 41: 'Nice', 43: 'Abu Dhabi', 44: 'Wolfsburg', 46: 'Barcelona', 47: 'Lausanne', 48: 'Mulhouse', 49: 'Istanbul', 50: 'Kocaeli', 51: 'Berlin', 53: 'Vienna', 54: '42 Central', 55: 'Tétouan' };
   const loadCampusNames = () => {
     if (campusNameCache.map) return Promise.resolve(campusNameCache.map);
-    if (campusNameCache.promise) return campusNameCache.promise;
-    const cached = readCampusNames();
-    cached[BANGKOK_CAMPUS_ID] = 'Bangkok';
-    campusNameCache.map = cached;
-    campusNameCache.promise = (async () => {
-      try {
-        const d = await authedJSON('https://intrapy.intra.42.fr/api/v1/campus');
-        const arr = Array.isArray(d) ? d : ((d && (d.data || d.campuses || d.items)) || []);
-        for (const c of (Array.isArray(arr) ? arr : [])) {
-          const id = Number(c && (c.id || c.campus_id));
-          const nm = c && (c.name || c.display_name || c.city || c.title);
-          if (id && nm) cached[id] = String(nm);
-        }
-        try { localStorage.setItem(CAMPUS_NAMES_KEY, JSON.stringify(cached)); } catch (_) {}
-      } catch (_) {}
-      return cached;
-    })().finally(() => { campusNameCache.promise = null; });
-    return campusNameCache.promise;
+    const merged = Object.assign({}, STATIC_CAMPUS_NAMES, readCampusNames());
+    merged[BANGKOK_CAMPUS_ID] = 'Bangkok';
+    campusNameCache.map = merged;
+    return Promise.resolve(merged);
   };
   const campusClusterCache = { time: new Map(), data: new Map(), promise: new Map() };
   const getCampusCluster = async (id, force) => {
@@ -267,7 +255,7 @@
     try {
       if (campus === 'all') { const gm = await getGlobalMap(force); locs = [...gm.values()]; scopeNote = 'all campuses'; }
       else if (Number(campus) === BANGKOK_CAMPUS_ID) { locs = await getBangkok(force); scopeNote = 'Bangkok'; }
-      else { locs = await getCampusCluster(campus, force); scopeNote = 'Campus ' + campus; }
+      else { locs = await getCampusCluster(campus, force); scopeNote = STATIC_CAMPUS_NAMES[Number(campus)] || ('Campus ' + campus); }
     }
     catch (_) { hh.note.textContent = 'Live feed unavailable \u00B7 showing cached'; }
     if (!alive()) return;
