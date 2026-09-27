@@ -1,42 +1,41 @@
-# 42 Bangkok Cluster & Friends — Userscript
+# bangkok cluster & friends 👀
 
-A Tampermonkey userscript that adds a live **Bangkok TH cluster map**, a cross-campus **Friends presence** panel, and a per-batch **leaderboard** to the 42 intranet (meta, old profile, and profile-v3 pages).
+your 42 intra, but actually usable.
 
-> Requires the **[Better Intra](https://betterintra.com/)** extension ([source](https://github.com/nicopasla/better-intra), Firefox / Chrome / Brave) — this script builds on top of it.
+live cluster map + friend tracking + leaderboard, right inside intra. no new tabs, no refresh spam.
 
-## Features
+> needs [**Better Intra**](https://betterintra.com/) ([source](https://github.com/nicopasla/better-intra)) to work — firefox / chrome / brave all good.
 
-- **Bangkok TH tab** — live Zone/Table/Chair map of campus 33, total online counter, friend seats highlighted, relative login time (`2h 14m`), batch badges (`login #9`)
-- **Friends tab** — track any 42 logins across all campuses, online host + offline `seen X ago`, avatars, per-card level
-- **Leaderboard tab** — per-batch ranking (online + offline) with campus selector (Bangkok default, All, each campus), batch filter, Load 10 → all cap, sorted **Level** or **Active 30d** high → low, `All | Online | Offline` filter, paste-a-promo roster import
-- **profile-v3 support** — floating `TH` button + modal that survives SPA navigation, `Esc` to close
+## what's inside
 
-## Install
+- 🗺️ **bangkok th** — live zone/table/chair map, who's online, friend seats lit up, `seen 2h ago`, batch tags (`login #9`)
+- 👥 **friends** — stalk your people across every campus. online host or last-seen time, zero effort
+- 🏆 **leaderboard** — per-batch rankings, level or last-30-days grind. filter by campus (bangkok default, or all like peerfinder), pick your batch, cap the load
+- ⚡ **fast by default** — renders instantly from cache, loads details only when you ask. stop button included for when intra is being intra
 
-1. Install a userscript manager: [Tampermonkey](https://www.tampermonkey.net/) (Chrome / Firefox / Brave).
-2. Install [Better Intra](https://betterintra.com/).
-3. Click the script file below and hit **Raw → Install**:
-   - [`Bangkok-Finder.user.js`](./Bangkok-Finder.user.js)
-4. Open https://meta.intra.42.fr/clusters — new `Bangkok TH`, `Friends`, and `Leaderboard` tabs appear. On profile pages use the floating `TH` button.
+## install (2 min)
 
-Updates are automatic via `@updateURL` — Tampermonkey checks the raw file on GitHub.
+1. get [tampermonkey](https://www.tampermonkey.net/)
+2. get [better intra](https://betterintra.com/)
+3. open [`Bangkok-Finder.user.js`](./Bangkok-Finder.user.js) → **raw → install**
+4. go to [clusters](https://meta.intra.42.fr/clusters) — new tabs just appear. on profiles, hit the floating `TH` button
 
-## Usage tips
+auto-updates itself. touch grass, not settings.
 
-- **Friends → Manage list**: paste logins separated by spaces, commas, or new lines, then Save.
-- **Leaderboard → campus dropdown**: stays on Bangkok by default; pick another campus or All — just like peerfinder's online page.
-- **Leaderboard → Save roster**: paste a full promo list once to rank offline students too (stored locally, nothing leaves your browser).
-- All caches (levels, batches, seen-times) live in `localStorage`; UI paints instantly and enriches in the background.
+## pro tips
 
-## Fork & contribute
+- friends → **manage list**: dump logins in, separated however. it figures it out
+- leaderboard → **save roster**: paste your whole promo once, rank everybody including the ghosts
+- everything lives in your `localStorage`. nothing leaves your browser 🤙
 
-Contributions welcome — especially new campuses, stats, and profile-v3 fixes.
+## wanna contribute?
 
-1. Fork this repo (top-right **Fork** button).
-2. Clone your fork, edit `Bangkok-Finder.user.js`, verify syntax:
-   ```bash
-   node --check Bangkok-Finder.user.js
-   ```
-3. Commit on a branch and open a **Pull Request** against `main` describing what you tested on intra.
+forks > issues. fr.
 
-Please keep changes to the single userscript file, avoid new `@connect` hosts unless needed, and don't break the no-build-step setup (plain JS, no bundler).
+```bash
+git clone <your-fork>
+# edit Bangkok-Finder.user.js
+node --check Bangkok-Finder.user.js   # must pass
+```
+
+open a PR against `main` and say what you tested on intra. one file, plain js, no bundler, no new `@connect` hosts unless you really need them.
