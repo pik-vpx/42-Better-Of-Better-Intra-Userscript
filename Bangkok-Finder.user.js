@@ -7,13 +7,17 @@
 // @match        https://profile.intra.42.fr/*
 // @match        https://profile-v3.intra.42.fr/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_addValueChangeListener
 // @connect      meta.intra.42.fr
 // @connect      profile.intra.42.fr
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.5
-// @changelog    Leaderboard auto-refreshes when login completes in another tab.
+// @version      2.6.6
+// @changelog    Login works across meta/profile origins via shared script storage.
 // ==/UserScript==
 
 
@@ -50,9 +54,21 @@
   const API_CLIENT_ID = 'u-s4t2ud-15306ab01ddd3adffadab88702be58dcb5d7c50791f930aaababf8da79ae4d06';
   const API_REDIRECT_URI = 'https://meta.intra.42.fr/clusters';
   const API_SECRET_KEY = 'bkk42-api-secret';
-  const readApiSecret = () => { try { return (localStorage.getItem(API_SECRET_KEY) || '').trim(); } catch (_) { return ''; } };
-  const readApiStore = () => { try { const raw = localStorage.getItem(API_TOKEN_KEY) || ''; if (!raw) return {}; const o = JSON.parse(raw); if (o && typeof o === 'object' && !Array.isArray(o)) return o; return { a: raw }; } catch (_) { try { return { a: localStorage.getItem(API_TOKEN_KEY) || '' }; } catch (_) { return {}; } } };
-  const writeApiStore = (o) => { try { localStorage.setItem(API_TOKEN_KEY, JSON.stringify(o)); } catch (_) {} };
+  const gmGet = (k, fb) => {
+    let g = fb, hasG = false;
+    try { if (typeof GM_getValue !== 'undefined') { g = GM_getValue(k, fb); hasG = g !== fb && g != null; } } catch (_) {}
+    if (hasG) return g;
+    let l = fb;
+    try { l = localStorage.getItem(k); } catch (_) { l = fb; }
+    if (l == null) return fb;
+    try { if (typeof GM_setValue !== 'undefined') GM_setValue(k, l); } catch (_) {}
+    return l;
+  };
+  const gmSet = (k, v) => { try { if (typeof GM_setValue !== 'undefined') { GM_setValue(k, v); return; } } catch (_) {} try { localStorage.setItem(k, v); } catch (_) {} };
+  const gmDel = (k) => { try { if (typeof GM_deleteValue !== 'undefined') { GM_deleteValue(k); return; } } catch (_) {} try { localStorage.removeItem(k); } catch (_) {} };
+  const readApiSecret = () => gmGet(API_SECRET_KEY, '').trim();
+  const readApiStore = () => { try { const raw = gmGet(API_TOKEN_KEY, ''); if (!raw) return {}; const o = JSON.parse(raw); if (o && typeof o === 'object' && !Array.isArray(o)) return o; return { a: raw }; } catch (_) { const fb = gmGet(API_TOKEN_KEY, ''); return fb ? { a: fb } : {}; } };
+  const writeApiStore = (o) => gmSet(API_TOKEN_KEY, JSON.stringify(o));
   const v2Starts = [];
   const v2Slot = async () => {
     for (;;) {
@@ -376,7 +392,7 @@
     const oauthStatusText = () => {
       if (readApiToken()) return apiStatus.ok === false ? 'API token rejected (401) — login again' : 'API linked — official v2 active';
       try {
-        const o = JSON.parse(localStorage.getItem('bkk42-oauth-last') || 'null');
+        const o = JSON.parse(gmGet('bkk42-oauth-last', 'null'));
         if (o && !o.ok && Date.now() - (o.t || 0) < 3600000) {
           if (o.err === 'no-secret') return 'Login returned a code but no secret saved — save secret, Login again';
           return 'Last login failed' + (o.err ? ' (' + o.err + ')' : '') + ' — try again';
@@ -389,14 +405,14 @@
       if (!readApiSecret()) { tst.textContent = 'Save your app secret below first (local only)'; try { sinput.focus(); } catch (_) {} return; }
       window.open('https://api.intra.42.fr/oauth/authorize?client_id=' + encodeURIComponent(API_CLIENT_ID) + '&redirect_uri=' + encodeURIComponent(API_REDIRECT_URI) + '&response_type=code&scope=public', '_blank');
     };
-    logoutBtn.onclick = () => { try { localStorage.removeItem(API_TOKEN_KEY); } catch (_) {} apiStatus.ok = null; renderTop(root, false, keep()); };
+    logoutBtn.onclick = () => { gmDel(API_TOKEN_KEY); apiStatus.ok = null; renderTop(root, false, keep()); };
     trow.append(loginBtn, logoutBtn, tst);
     const srow = el('div', 'bkk42-editor-row');
     const sinput = el('input'); sinput.type = 'password';
     sinput.placeholder = readApiSecret() ? 'App secret saved — paste new to replace' : 'Paste 42 app secret (local only, needed for login/refresh)';
     sinput.style.cssText = 'flex:1;min-width:0;padding:9px 11px;background:#2a303b;color:#fff;border:1px solid #4c5564;border-radius:5px';
     const ssv = el('button', '', 'Save secret'); ssv.type = 'button';
-    ssv.onclick = () => { const v = sinput.value.trim(); if (!v) return; try { localStorage.setItem(API_SECRET_KEY, v); } catch (_) {} renderTop(root, false, keep()); };
+    ssv.onclick = () => { const v = sinput.value.trim(); if (!v) return; gmSet(API_SECRET_KEY, v); renderTop(root, false, keep()); };
     srow.append(sinput, ssv, el('span', 'bkk42-hint', 'Secret + token never leave this browser.'));
     imp.append(ta, irow, trow, srow); root.appendChild(imp);
     const list = el('div', 'bkk42-zones'); root.appendChild(list);
@@ -562,10 +578,12 @@
     else if (campus !== 'all' && apiStatus.ok === false) hh.note.textContent += ' · API token rejected — Login with 42 again';
   };
   const createModal = () => { const ex = document.getElementById(ID.modal); if (ex && ex.openView) return ex; if (ex) ex.remove(); const mo = el('div'); mo.id = ID.modal; mo.hidden = true; const sh = el('section', 'bkk42-shell'); const bar = el('header', 'bkk42-bar'); const nv = el('nav', 'bkk42-nav'); const cb = el('button', 'active', 'Bangkok TH'); cb.type = 'button'; const fb = el('button', '', 'Friends'); fb.type = 'button'; const tb = el('button', '', 'Leaderboard'); tb.type = 'button'; const cl = el('button', 'bkk42-close', '\u00D7'); cl.type = 'button'; cl.setAttribute('aria-label', 'Close'); nv.append(cb, fb, tb); bar.append(el('div', 'bkk42-brand', '42 Bangkok'), nv, cl); const body = el('main', 'bkk42-modal-body'); const cv = el('section', 'bkk42-view'); const fv2 = el('section', 'bkk42-view'); fv2.hidden = true; const tv = el('section', 'bkk42-view'); tv.hidden = true; body.append(cv, fv2, tv); sh.append(bar, body); mo.appendChild(sh); document.body.appendChild(mo); const show = (n) => { cb.classList.toggle('active', n === 'cluster'); fb.classList.toggle('active', n === 'friends'); tb.classList.toggle('active', n === 'top'); cv.hidden = n !== 'cluster'; fv2.hidden = n !== 'friends'; tv.hidden = n !== 'top'; if (n === 'friends') renderFriends(fv2, false, (o, t2) => { fb.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); }); else if (n === 'top') renderTop(tv, false); else renderCluster(cv); }; cb.onclick = () => show('cluster'); fb.onclick = () => show('friends'); tb.onclick = () => show('top'); cl.onclick = () => { mo.hidden = true; }; mo.addEventListener('click', (e) => { if (e.target === mo) mo.hidden = true; });     mo.openView = (n) => { mo.hidden = false; show(n); }; 
+    const rerenderTop = () => { try { if (!mo.hidden && !tv.hidden) renderTop(tv, false); } catch (_) {} };
     window.addEventListener('storage', (ev) => {
       if (!ev || (ev.key !== API_TOKEN_KEY && ev.key !== 'bkk42-oauth-last')) return;
-      try { if (!mo.hidden && !tv.hidden) renderTop(tv, false); } catch (_) {}
+      rerenderTop();
     });
+    try { if (typeof GM_addValueChangeListener !== 'undefined') { GM_addValueChangeListener(API_TOKEN_KEY, rerenderTop); GM_addValueChangeListener('bkk42-oauth-last', rerenderTop); } } catch (_) {}
     return mo; };
   const mountMeta = () => { const done = document.getElementById(ID.clusterTab)?.isConnected && document.getElementById(ID.clusterPane)?.isConnected && document.getElementById(ID.friendsTab)?.isConnected && document.getElementById(ID.friendsPane)?.isConnected && document.getElementById(ID.topTab)?.isConnected && document.getElementById(ID.topPane)?.isConnected; if (done) return true; const nv = document.querySelector('#main-container'); const ct = document.querySelector('#cluster-map .tab-content'); if (!nv || !ct) return false; [ID.clusterTab, ID.friendsTab, ID.topTab, ID.clusterPane, ID.friendsPane, ID.topPane, 'bi-friends-style'].forEach((id) => document.getElementById(id)?.remove()); const add = (tid, pid, label, render) => { const it = el('li'); it.id = tid; it.setAttribute('role', 'presentation'); const lk = el('a', '', label); lk.href = '#' + pid; lk.dataset.toggle = 'tab'; lk.setAttribute('role', 'tab'); const pn = el('div', 'tab-pane'); pn.id = pid; pn.setAttribute('role', 'tabpanel'); lk.addEventListener('click', () => render(pn)); it.appendChild(lk); nv.insertBefore(it, document.getElementById('cluster-shadow-host') || null); ct.appendChild(pn); return { link: lk, pane: pn }; }; add(ID.clusterTab, ID.clusterPane, 'Bangkok TH', (p) => renderCluster(p)); const fr2 = add(ID.friendsTab, ID.friendsPane, 'Friends', (p) => renderFriends(p, false, (o, t2) => { fr2.link.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); })); add(ID.topTab, ID.topPane, 'Leaderboard', (p) => renderTop(p)); return true; };
   const ensureFloatButton = () => { let f = document.getElementById(ID.float); if (!f) { f = el('button', '', 'TH'); f.id = ID.float; f.type = 'button'; f.title = 'Bangkok TH cluster'; f.setAttribute('aria-label', 'Open Bangkok TH cluster'); f.addEventListener('click', (e) => { e.preventDefault(); createModal().openView('cluster'); }); document.body.appendChild(f); } return true; };
@@ -580,8 +598,8 @@
       if (code) {
         q.delete('code'); q.delete('state');
         history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q.toString() : '') + location.hash);
-        if (readApiSecret()) exchangeCode(code).then((ok) => { try { localStorage.setItem('bkk42-oauth-last', JSON.stringify({ ok, t: Date.now(), err: ok ? '' : exchangeCodeLastErr })); } catch (_) {} });
-        else try { localStorage.setItem('bkk42-oauth-last', JSON.stringify({ ok: false, t: Date.now(), err: 'no-secret' })); } catch (_) {}
+        if (readApiSecret()) exchangeCode(code).then((ok) => { gmSet('bkk42-oauth-last', JSON.stringify({ ok, t: Date.now(), err: ok ? '' : exchangeCodeLastErr })); });
+        else gmSet('bkk42-oauth-last', JSON.stringify({ ok: false, t: Date.now(), err: 'no-secret' }));
       }
     } catch (_) {} (location.hostname === 'meta.intra.42.fr' ? mountMeta : mountProfile)(); if (spaObserver) spaObserver.disconnect(); spaObserver = new MutationObserver(() => { (location.hostname === 'meta.intra.42.fr' ? mountMeta : mountProfile)(); }); spaObserver.observe(document.body, { childList: true, subtree: true });   setTimeout(() => { if (location.hostname === 'meta.intra.42.fr') spaObserver?.disconnect(); }, 20000); };
   const recheckRoute = () => { if (location.href !== lastUrl) boot(); };
