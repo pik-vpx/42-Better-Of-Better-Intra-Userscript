@@ -10,7 +10,7 @@ live cluster map + friend tracking + leaderboard, right inside intra. no new tab
 
 - 🗺️ **bangkok th** — live zone/table/chair map, who's online, friend seats lit up, `seen 2h ago`, batch tags (`login #9`)
 - 👥 **friends** — stalk your people across every campus. online host or last-seen time, zero effort
-- 🏆 **leaderboard** — per-batch rankings, level or last-30-days grind. filter by campus (bangkok default, or all like peerfinder), pick your batch, cap the load
+- 🏆 **leaderboard** (login required) — whole campus, batched groups. login, profile link, batch, login-time per row. level or last-30-days sort, campus + batch filters, load caps
 - ⚡ **fast by default** — renders instantly from cache, loads details only when you ask. stop button included for when intra is being intra
 
 ## install (2 min)
@@ -26,8 +26,7 @@ auto-updates itself. touch grass, not settings.
 
 - friends → **manage list**: dump logins in, separated however. it figures it out
 - leaderboard → **save roster**: paste your whole promo once, rank everybody including the ghosts
-- leaderboard → **discover students**: no token? this crawls intra search a–z/0–9 and grows your roster beyond friends + online. slow, stoppable, one click
-- leaderboard → **login with 42**: save your app secret in the box once, hit login, approve on 42's page — tokens store + refresh themselves. no token? session mode still works fine. secrets stay in your browser, never shared, never committed 🔒
+- leaderboard → **login with 42**: save your app secret in the box once, hit login, approve on 42's page — tokens store + refresh themselves. no login? you still get the bangkok map + friends tabs. secrets stay in your browser, never shared, never committed 🔒
 - everything lives in your `localStorage`. nothing leaves your browser 🤙
 
 ## wanna contribute?

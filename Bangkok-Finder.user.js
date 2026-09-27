@@ -9,13 +9,11 @@
 // @grant        GM_xmlhttpRequest
 // @connect      meta.intra.42.fr
 // @connect      profile.intra.42.fr
-// @connect      intrapy.intra.42.fr
-// @connect      pace-system.42.fr
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.5.2
-// @changelog    Roster failures now say why (HTTP status) instead of failing silently.
+// @version      2.6.0
+// @changelog    Official API only: login-gated leaderboard with login times, session scraping removed.
 // ==/UserScript==
 
 
@@ -43,8 +41,8 @@
   const fmtAgo = (ms) => { if (!isFinite(ms) || ms < 0) ms = 0; const t = Math.floor(ms / 1000); const d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; if (d > 0) return d + 'd ' + h + 'h'; if (h > 0) return h + 'h ' + m + 'm'; if (m > 0) return m + 'm ' + s + 's'; return s + 's'; };
   const agoLabel = (beginAt, login) => { if (beginAt) { const t = Date.parse(beginAt); if (!isNaN(t)) return fmtAgo(Date.now() - t); } if (login) { const s = readSeen()[String(login).toLowerCase()]; if (s) { const a = Date.now() - seenTime(s); if (a > 36e5) return '... ' + fmtAgo(a) + ' ago'; return 'seen ' + fmtAgo(a) + ' ago'; } } return '...'; };
   const batchFromDate = (iso) => { if (!iso) return null; const d = new Date(iso); if (isNaN(d)) return null; const y = d.getFullYear(); const n = y - 2017; if (!(n > 0 && n < 30)) return null; return { n, label: '#' + n }; };
-  const getToken = () => { try { return sessionStorage.getItem('ft_intrapy_token') || ''; } catch (_) { return ''; } };
-  const authedJSON = async (url) => { const tk = getToken(); const H = tk ? { Authorization: tk, Accept: 'application/json' } : { Accept: 'application/json' }; if (typeof GM_xmlhttpRequest === 'function' && /^https:\/\/(intrapy\.intra\.42\.fr|pace-system\.42\.fr)/.test(url)) return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, headers: H, responseType: 'json', timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) })); if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { headers: H }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } const r = await fetch(url, { headers: H, credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
+
+
   const readMetaCache = () => { try { return JSON.parse(localStorage.getItem(META_KEY) || '{}') || {}; } catch (_) { return {}; } };
   const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
   // SECURITY: never hardcode a token here — paste it in the Leaderboard UI box. Browser localStorage only, never in git.
@@ -127,27 +125,6 @@
   };
   const readRosterExtra = () => { try { const v = JSON.parse(localStorage.getItem(ROSTER_EXTRA_KEY) || '[]'); return Array.isArray(v) ? parseLogins(v.join(' ')) : []; } catch (_) { return []; } };
   const buildRoster = (onlineLogins) => { const set = new Set(); for (const l of (onlineLogins || [])) { const s = String(l || '').toLowerCase(); if (s) set.add(s); } for (const l of Object.keys(readSeen())) set.add(String(l).toLowerCase()); for (const l of readFriends()) set.add(String(l).toLowerCase()); for (const l of readRosterExtra()) set.add(String(l).toLowerCase()); return [...set].filter((s) => /^[a-z0-9_-]{2,30}$/.test(s)); };
-  const SEARCH_PREFIXES = 'abcdefghijklmnopqrstuvwxyz0123456789'.split('');
-  const discoverLogins = async (have, onNote, alive) => {
-    const found = new Set(have);
-    let added = 0, done = 0;
-    for (const p of SEARCH_PREFIXES) {
-      if (!alive()) return { added, stopped: true, all: [...found] };
-      try {
-        const rs = await withTimeout(requestJSON('https://profile.intra.42.fr/searches/search.json?query=' + encodeURIComponent(p)), 12000);
-        if (Array.isArray(rs)) {
-          for (const x of rs) {
-            const l = String((x && x.login) || '').toLowerCase();
-            if (/^[a-z0-9_-]{2,30}$/.test(l) && !found.has(l)) { found.add(l); added++; }
-          }
-        }
-      } catch (_) {}
-      done++;
-      try { onNote('Discovering ' + done + '/' + SEARCH_PREFIXES.length + ' · +' + added + ' new'); } catch (_) {}
-      await new Promise((r) => setTimeout(r, 300));
-    }
-    return { added, stopped: false, all: [...found] };
-  };
   const getUserMeta = async (login) => { login = String(login || '').toLowerCase(); if (!login) return {}; const c = readMetaCache(); const now = Date.now(); if (c[login] && now - (c[login].t || 0) < 604800000) return c[login];
     if (readApiToken()) {
       try {
@@ -163,7 +140,7 @@
         return m;
       } catch (_) {}
     }
-    try { const u = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login)); let level = (c[login] && c[login].level != null) ? c[login].level : null; let preBegin = ''; try { const cu = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/cursus'); const main = Array.isArray(cu) ? cu.find((e) => e.slug === '42cursus') : null; if (main) level = main.level + (main.progress ? main.progress / 100 : 0); preBegin = (main && (main.begin_at || main.created_at || main.cursus_begin_date)) || ''; } catch (_) {} let batch = (c[login] && c[login].batch) || '', batchN = (c[login] && c[login].batchN) || 0, begin = preBegin || (c[login] && c[login].begin) || ''; if (u && u.id) { try { const p = await authedJSON('https://pace-system.42.fr/api/v1/users/' + u.id + '/profile'); if (p && p.cursus_begin_date) { begin = p.cursus_begin_date; const b = batchFromDate(begin); if (b) { batch = b.label; batchN = b.n; } } } catch (_) {} } const m = { id: (u && u.id) || 0, level, batch, batchN, begin, t: now }; c[login] = m; try { localStorage.setItem(META_KEY, JSON.stringify(c)); } catch (_) {} return m; } catch (_) { return c[login] || {}; } };
+    return c[login] || {}; };
   const requestJSON = async (url) => { if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, responseType: 'json', withCredentials: true, timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) })); const r = await fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
   const getBangkok = async (force) => { if (!force && bangkokCache.data.length && Date.now() - bangkokCache.time < 60000) return bangkokCache.data; if (bangkokCache.promise) return bangkokCache.promise; bangkokCache.promise = requestJSON(CLUSTER_URL).then((data) => { bangkokCache.data = Array.isArray(data) ? data.filter((e) => e && !e.end_at && e.login && e.host) : [];       bangkokCache.time = Date.now(); recordSeen(bangkokCache.data, BANGKOK_CAMPUS_ID); return bangkokCache.data; }).finally(() => { bangkokCache.promise = null; }); return bangkokCache.promise; };
   const getGlobalMap = async (force) => { if (!force && globalCache.map.size && Date.now() - globalCache.time < 60000) return globalCache.map; if (globalCache.promise) return globalCache.promise; globalCache.promise = (async () => { const urls = [CLUSTER_URL].concat(ACTIVE_CAMPUSES.filter((id) => id !== BANGKOK_CAMPUS_ID).map((id) => CLUSTER_URL + '?campus_id=' + id)); const settled = await Promise.all(urls.map(async (u) => { try { const d = await requestJSON(u); return Array.isArray(d) ? d.filter((e) => e && !e.end_at && e.login && e.host) : []; } catch (_) { return []; } }));       const map = new Map(); for (const e of settled.flat()) map.set(String(e.login).toLowerCase(), e); recordSeen([...map.values()], 0); globalCache.map = map; globalCache.time = Date.now(); return map; })().finally(() => { globalCache.promise = null; }); return globalCache.promise; };
@@ -299,7 +276,7 @@
     else setTimeout(() => { runQueue(); }, 1500);
   };
   const renderCluster = async (root, force) => { root.className = 'bkk42-root'; root.replaceChildren(); const hh = makeHead('Bangkok TH', 'Loading live workstations...'); const total = el('div', 'bkk42-total'); const tn = el('strong', '', '--'); total.append(tn, document.createTextNode(' Online')); const ref = el('button', 'primary', 'Refresh'); ref.type = 'button'; ref.onclick = () => renderCluster(root, true); hh.actions.append(total, ref); root.appendChild(hh.head); try { ref.disabled = true; const locs = await getBangkok(force); const fr = new Set(readFriends()); tn.textContent = String(locs.length); hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const zones = el('div', 'bkk42-zones'); for (let z = 1; z <= 3; z++) { const users = locs.filter((e) => String(e.host).toLowerCase().startsWith('z' + z + 't')); const zone = el('section', 'bkk42-zone'); zone.appendChild(el('h3', '', 'Zone ' + z + ' \u00B7 ' + users.length + ' online')); const tm = new Map(); for (const u of users) { const m2 = String(u.host).match(/^z\d+t(\d+)c(\d+)$/i); if (!m2) continue; const tb = Number(m2[1]); if (!tm.has(tb)) tm.set(tb, new Map()); tm.get(tb).set(Number(m2[2]), u); } if (!tm.size) zone.appendChild(el('div', 'bkk42-empty', 'No active tables')); else { const tables = el('div', 'bkk42-tables'); for (const tt of [...tm].sort((a, b) => a[0] - b[0])) { const table = el('div', 'bkk42-table'); table.appendChild(el('div', 'bkk42-table-title', 'Table T' + tt[0])); const grid = el('div', 'bkk42-chairs'); for (let ch = 1; ch <= 4; ch++) { const u = tt[1].get(ch); const login = u ? String(u.login).toLowerCase() : ''; const seat = el(u ? 'a' : 'div', 'bkk42-seat' + (u && fr.has(login) ? ' friend' : '') + (u ? '' : ' empty')); if (u) { seat.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login); if (u.cdn_uri) { const im = el('img'); im.src = String(u.cdn_uri); im.alt = ''; im.loading = 'lazy'; seat.appendChild(im); } } seat.append(el('span', 'bkk42-host', 'Z' + z + ' \u00B7 T' + tt[0] + ' \u00B7 C' + ch), el('span', 'bkk42-login', u ? login + (fr.has(login) ? ' \u2605' : '') : 'Empty')); if (u) { seat.appendChild(el('span', 'bkk42-sub', agoLabel(u.begin_at, login))); seat.dataset.login = login; } grid.appendChild(seat); } table.appendChild(grid); tables.appendChild(table); } zone.appendChild(tables); } zones.appendChild(zone); } root.appendChild(zones); enrichCards(root); } catch (_) { hh.note.textContent = 'Live feed unavailable'; root.appendChild(el('div', 'bkk42-error', 'Could not load Bangkok cluster locations.')); } finally { ref.disabled = false; } };
-  const hydrateFriendImages = async (grid) => { let cache = {}; try { cache = JSON.parse(localStorage.getItem(IMAGES_KEY) || '{}') || {}; } catch (_) {} for (const card of [...grid.querySelectorAll('.bkk42-card[data-login]')].slice(0, 30)) { if (!card.isConnected || card.querySelector('img')) continue; const login = card.dataset.login; let u2 = cache[login]; if (!u2) { try { const rs = await requestJSON('https://profile.intra.42.fr/searches/search.json?query=' + encodeURIComponent(login)); const ex = Array.isArray(rs) ? rs.find((x) => String(x.login).toLowerCase() === login) : null; u2 = (ex && ex.cdn_uri) || ''; if (u2) { cache[login] = u2; localStorage.setItem(IMAGES_KEY, JSON.stringify(cache)); } } catch (_) {} } if (u2 && card.isConnected && !card.querySelector('img')) { const im = el('img'); im.src = u2; im.alt = ''; im.loading = 'lazy'; card.querySelector('.bkk42-avatar')?.replaceWith(im); } } };
+  const hydrateFriendImages = async (grid) => { let cache = {}; try { cache = JSON.parse(localStorage.getItem(IMAGES_KEY) || '{}') || {}; } catch (_) {} for (const card of [...grid.querySelectorAll('.bkk42-card[data-login]')].slice(0, 30)) { if (!card.isConnected || card.querySelector('img')) continue; const login = card.dataset.login; let u2 = cache[login];       if (!u2 && readApiToken()) { try { const u = await apiV2('/users/' + encodeURIComponent(login)); const cand = (u && (u.image_url || (u.image && u.image.link))) || ''; if (cand) { u2 = String(cand); cache[login] = u2; localStorage.setItem(IMAGES_KEY, JSON.stringify(cache)); } } catch (_) {} } if (u2 && card.isConnected && !card.querySelector('img')) { const im = el('img'); im.src = u2; im.alt = ''; im.loading = 'lazy'; card.querySelector('.bkk42-avatar')?.replaceWith(im); } } };
   const renderFriends = async (root, force, onCount) => { onCount = onCount || (() => {}); root.className = 'bkk42-root'; root.replaceChildren(); const hh = makeHead('Friends \u00B7 all campuses', 'Checking live locations...'); const man = el('button', '', 'Manage list'); const ref = el('button', 'primary', 'Refresh'); hh.actions.append(man, ref); const ed = el('div', 'bkk42-editor'); const ta = el('textarea'); ta.placeholder = 'login1\nlogin2\nlogin3'; ta.value = readFriends().join('\n'); const row = el('div', 'bkk42-editor-row'); const sv = el('button', 'primary', 'Save list'); row.append(sv, el('span', 'bkk42-hint', 'Separate logins with spaces, commas, or new lines.')); ed.append(ta, row); const grid = el('div', 'bkk42-friends'); root.append(hh.head, ed, grid); man.onclick = () => { ed.classList.toggle('open'); if (ed.classList.contains('open')) ta.focus(); }; ref.onclick = () => renderFriends(root, true, onCount); sv.onclick = () => { writeFriends(parseLogins(ta.value)); renderFriends(root, false, onCount); }; let live = new Map(); try { ref.disabled = true; live = await getGlobalMap(force); hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 all campuses'; } catch (_) { hh.note.textContent = 'Live feed unavailable'; } finally { ref.disabled = false; } const fr = readFriends(); onCount(fr.filter((l) => live.has(l)).length, fr.length); if (!fr.length) grid.appendChild(el('div', 'bkk42-empty', 'No friends yet. Select Manage list to add 42 logins.')); for (const login of fr) { const loc = live.get(login); const card = el('div', 'bkk42-card' + (loc ? ' online' : '')); card.dataset.login = login; if (loc && loc.cdn_uri) { const im = el('img'); im.src = String(loc.cdn_uri); im.alt = ''; im.loading = 'lazy'; card.appendChild(im); } else card.appendChild(el('span', 'bkk42-avatar', '?')); const det = el('div'); const pf = el('a', '', login); pf.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login); const suf = loc && Number(loc.campus_id) !== BANGKOK_CAMPUS_ID ? ' \u00B7 campus ' + loc.campus_id : ''; det.append(pf, el('div', 'bkk42-status', loc ? 'Online \u00B7 ' + String(loc.host).toUpperCase() + suf : 'Offline')); det.appendChild(el('div', 'bkk42-sub', agoLabel(loc && loc.begin_at, login))); card.appendChild(det); grid.appendChild(card); } setTimeout(() => { if (grid.isConnected) hydrateFriendImages(grid); }, 2000); enrichCards(root); };
   const fmtHours = (h) => { if (h == null || !isFinite(h)) return '\u2014h'; const m = Math.round(h * 60); const hh = Math.floor(m / 60); if (hh < 1) return m + 'm'; return hh + 'h ' + (m % 60) + 'm'; };
   const getLog30d = async (login, loc) => {
@@ -316,13 +293,7 @@
           if (ph != null) { hours = ph; approx = false; }
         }
       } catch (_) {}
-      try {
-        const s = await withTimeout(authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/locations_stats?range=30d'), 8000);
-        const arr = s && (s.locations || s.stats || s.data || s);
-        if (Array.isArray(arr)) hours = arr.reduce((a, x) => a + (Number(x.total_hours || x.hours || x.duration_hours || 0)), 0) || null;
-        else if (s && s.total_hours != null) hours = Number(s.total_hours);
-        if (hours != null) approx = false;
-      } catch (_) {}
+
       if (hours == null) {
         const seen = seenTime(readSeen()[login]);
         const base = seen ? Math.max(0, (now - seen) / 36e5) : 0;
@@ -333,6 +304,31 @@
       try { const cc = readMetaCache(); cc[login] = Object.assign({}, cc[login], { log30d: hours, logApprox: approx, logT: now, t: (cc[login] && cc[login].t) || now }); localStorage.setItem(META_KEY, JSON.stringify(cc)); } catch (_) {}
       return { hours, approx };
     } catch (_) { return { hours: null, approx: true }; }
+  };
+  const LASTLOC_KEY = 'bkk42-last-loc';
+  const getLastLocation = async (login) => {
+    login = String(login || '').toLowerCase();
+    if (!login) return null;
+    let c = {};
+    try { c = JSON.parse(localStorage.getItem(LASTLOC_KEY) || '{}') || {}; } catch (_) {}
+    const hit = c[login];
+    if (hit && Date.now() - (hit.t || 0) < 86400000) return hit;
+    if (!readApiToken()) return hit || null;
+    try {
+      const d = await withTimeout(apiV2('/users/' + encodeURIComponent(login) + '/locations?page[size]=5'), 10000);
+      const arr = Array.isArray(d) ? d : [];
+      let best = null, bestT = 0;
+      for (const L of arr) {
+        const b = L && (L.begin_at || L.created_at);
+        const t = b ? Date.parse(b) : NaN;
+        if (!isNaN(t) && t > bestT) { bestT = t; best = L; }
+      }
+      if (!best) return hit || null;
+      const rec = { host: String((best.host || '')).toUpperCase(), begin: best.begin_at || best.created_at || '', end: best.end_at || '', t: Date.now() };
+      c[login] = rec;
+      try { localStorage.setItem(LASTLOC_KEY, JSON.stringify(c)); } catch (_) {}
+      return rec;
+    } catch (_) { return hit || null; }
   };
   const renderTop = async (root, force, opts) => {
     opts = opts || {};
@@ -362,7 +358,7 @@
     batchSel.onchange = () => renderTop(root, false, keep());
     limitSel.onchange = () => renderTop(root, false, keep());
     campusSel.onchange = () => renderTop(root, false, keep());
-    stopBtn.onclick = () => { root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1); stopBtn.hidden = true; loadBtn.hidden = false; ref.disabled = false; discoverBtn.disabled = false; };
+    stopBtn.onclick = () => { root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1); stopBtn.hidden = true; loadBtn.hidden = false; ref.disabled = false; };
     hh.actions.append(sortBtn, filtBtn, campusSel, batchSel, limitSel, loadBtn, stopBtn, ref);
     try { const vv = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || ''; if (vv) hh.actions.append(el('span', 'bkk42-hint', 'v' + vv)); } catch (_) {}
     root.appendChild(hh.head);
@@ -395,15 +391,21 @@
     const ssv = el('button', '', 'Save secret'); ssv.type = 'button';
     ssv.onclick = () => { const v = sinput.value.trim(); if (!v) return; try { localStorage.setItem(API_SECRET_KEY, v); } catch (_) {} renderTop(root, false, keep()); };
     srow.append(sinput, ssv, el('span', 'bkk42-hint', 'Secret + token never leave this browser.'));
-    const drow = el('div', 'bkk42-editor-row');
-    const discoverBtn = el('button', '', 'Discover students'); discoverBtn.type = 'button';
-    drow.append(discoverBtn, el('span', 'bkk42-hint', 'No token? Crawls intra search a–z/0–9 to find logins. Slow, stoppable.'));
-    imp.append(ta, irow, trow, srow, drow); root.appendChild(imp);
+    imp.append(ta, irow, trow, srow); root.appendChild(imp);
     const list = el('div', 'bkk42-zones'); root.appendChild(list);
     const passPresence = (m2) => presence === 'all' || (presence === 'online' ? !!m2.loc : !m2.loc);
     const passBatch = (m2) => { const bn = (m2.meta && m2.meta.batchN) || 0; if (batch === 'all') return true; if (batch === 'new') return !bn; return String(bn) === batch; };
     const sortMetas = (arr) => { if (mode === 'active') arr.sort((a, b) => (((b.log && b.log.hours) == null) ? -1 : b.log.hours) - (((a.log && a.log.hours) == null) ? -1 : a.log.hours)); else arr.sort((a, b) => ((b.meta.level == null ? -1 : b.meta.level) - (a.meta.level == null ? -1 : a.meta.level))); };
-    const rowSub = (row) => row.loc ? 'Online \u00B7 ' + String(row.loc.host).toUpperCase() : 'Offline \u00B7 ' + agoLabel(null, row.login);
+    const rowSub = (row) => {
+      if (row.loc) return 'Online \u00B7 ' + String(row.loc.host).toUpperCase() + ' \u00B7 ' + agoLabel(row.loc.begin_at, row.login);
+      const ll = row.lastLoc;
+      if (ll && (ll.end || ll.begin)) {
+        const t = Date.parse(ll.end || ll.begin);
+        const when = isNaN(t) ? '' : fmtAgo(Date.now() - t) + ' ago';
+        return 'Last seen ' + (when || 'a while ago') + (ll.host ? ' \u00B7 ' + ll.host : '');
+      }
+      return 'Offline \u00B7 ' + agoLabel(null, row.login);
+    };
     const drawList = (metas) => {
       list.replaceChildren();
       const groups = new Map();
@@ -460,6 +462,11 @@
     };
     const stampDone = (n) => { hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 ' + n + ' known \u00B7 ' + scopeNote; };
     let locs = []; let scopeNote = 'Bangkok';
+    if (!readApiToken()) {
+      hh.note.textContent = 'Leaderboard needs login';
+      list.appendChild(el('div', 'bkk42-empty', 'Login with 42 above to load the whole campus leaderboard. Without login you still have the Bangkok map + Friends tabs.'));
+      return;
+    }
     try {
       if (campus === 'all') { const gm = await getGlobalMap(force); locs = [...gm.values()]; scopeNote = 'all campuses'; }
       else if (Number(campus) === BANGKOK_CAMPUS_ID) { locs = await getBangkok(force); scopeNote = 'Bangkok'; }
@@ -510,6 +517,7 @@
         await Promise.all(queue.slice(i, i + 4).map(async (m2) => {
           if (!alive()) return;
           m2.meta = await getUserMeta(m2.login);
+          if (!m2.loc && m2.lastLoc === undefined) m2.lastLoc = await getLastLocation(m2.login);
           if (mode === 'active' && m2.log === undefined) m2.log = await getLog30d(m2.login, m2.loc);
         }));
         if (!alive()) { ref.disabled = false; return; }
@@ -526,25 +534,6 @@
       stampDone(metas.length);
     };
     loadBtn.onclick = () => { loadMissing(); };
-    discoverBtn.onclick = async () => {
-      const tk = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1));
-      const isAlive = () => root.isConnected && root.dataset.loadToken === tk;
-      discoverBtn.disabled = true; stopBtn.hidden = false; ref.disabled = true;
-      const have = new Set(metas.map((m) => m.login));
-      const r = await discoverLogins(have, (t) => { if (isAlive()) hh.note.textContent = t; }, isAlive);
-      ref.disabled = false;
-      if (!isAlive()) return;
-      stopBtn.hidden = true; discoverBtn.disabled = false;
-      const fresh = (r.all || []).filter((l) => !have.has(l));
-      if (fresh.length) {
-        try { const curL = readRosterExtra(); localStorage.setItem(ROSTER_EXTRA_KEY, JSON.stringify([...new Set(curL.concat(fresh))])); } catch (_) {}
-        hh.note.textContent = 'Discovered ' + fresh.length + ' new logins — reloading...';
-        renderTop(root, false, keep());
-      } else {
-        hh.note.textContent = r.stopped ? 'Discovery stopped.' : 'Discovery found nothing new.';
-        stampDone(metas.length);
-      }
-    };
     if (mode === 'active') {
       stopBtn.hidden = false; ref.disabled = true;
       for (let i = 0; i < metas.length; i += 4) {
