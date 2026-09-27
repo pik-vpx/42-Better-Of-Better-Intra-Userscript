@@ -14,8 +14,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.5.1
-// @changelog    2/sec request bucket, fewer session requests per student, seed diagnostics.
+// @version      2.5.2
+// @changelog    Roster failures now say why (HTTP status) instead of failing silently.
 // ==/UserScript==
 
 
@@ -219,7 +219,7 @@
     for (let page = 1; page <= 20; page++) {
       let d = null;
       try { d = await withTimeout(apiV2('/campus/' + id + '/users?page[size]=100&page[number]=' + page), 15000); }
-      catch (_) { break; }
+      catch (e) { if (page === 1 && !logins.length) throw e; break; }
       if (!Array.isArray(d) || !d.length) break;
       for (const u of d) {
         const login = String((u && u.login) || '').toLowerCase();
@@ -363,7 +363,9 @@
     limitSel.onchange = () => renderTop(root, false, keep());
     campusSel.onchange = () => renderTop(root, false, keep());
     stopBtn.onclick = () => { root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1); stopBtn.hidden = true; loadBtn.hidden = false; ref.disabled = false; discoverBtn.disabled = false; };
-    hh.actions.append(sortBtn, filtBtn, campusSel, batchSel, limitSel, loadBtn, stopBtn, ref); root.appendChild(hh.head);
+    hh.actions.append(sortBtn, filtBtn, campusSel, batchSel, limitSel, loadBtn, stopBtn, ref);
+    try { const vv = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || ''; if (vv) hh.actions.append(el('span', 'bkk42-hint', 'v' + vv)); } catch (_) {}
+    root.appendChild(hh.head);
     const imp = el('div', 'bkk42-editor open');
     const ta = el('textarea'); ta.placeholder = 'Paste full promo logins to include offline (space/comma/newline)';
     ta.value = readRosterExtra().join('\n'); ta.style.minHeight = '48px';
@@ -470,6 +472,7 @@
     const fullSet = new Set();
     if (campus !== 'all' && readApiToken()) {
       hh.note.textContent = 'Loading full campus roster...';
+      let rosterErr = '';
       try {
         const full = await withTimeout(loadCampusRoster(Number(campus)), 90000);
         if (!alive()) return;
@@ -477,8 +480,10 @@
           for (const l of full) fullSet.add(l);
           roster = [...new Set(roster.concat(full))];
           scopeNote += ' · full roster (' + lastSeedHits + ' levels)';
+        } else if (readApiToken()) {
+          scopeNote += ' · roster empty' + (rosterErr ? ' (' + rosterErr + ')' : ' (no error info)');
         }
-      } catch (_) {}
+      } catch (e) { rosterErr = String((e && e.message) || e || 'error'); scopeNote += ' · roster failed (' + rosterErr + ')'; }
     }
     const snap = readMetaCache();
     let metas = roster.map((l) => ({ login: l, meta: snap[l] || {}, loc: online.get(l) || null }));
@@ -558,6 +563,7 @@
     if (missing) { loadBtn.textContent = 'Load details (' + missing + ' new)'; loadBtn.hidden = false; }
     stampDone(metas.length);
     if (campus !== 'all' && !readApiToken()) hh.note.textContent += ' · paste API token for full roster';
+    else if (campus !== 'all' && apiStatus.ok === false) hh.note.textContent += ' · API token rejected — Login with 42 again';
   };
   const createModal = () => { const ex = document.getElementById(ID.modal); if (ex && ex.openView) return ex; if (ex) ex.remove(); const mo = el('div'); mo.id = ID.modal; mo.hidden = true; const sh = el('section', 'bkk42-shell'); const bar = el('header', 'bkk42-bar'); const nv = el('nav', 'bkk42-nav'); const cb = el('button', 'active', 'Bangkok TH'); cb.type = 'button'; const fb = el('button', '', 'Friends'); fb.type = 'button'; const tb = el('button', '', 'Leaderboard'); tb.type = 'button'; const cl = el('button', 'bkk42-close', '\u00D7'); cl.type = 'button'; cl.setAttribute('aria-label', 'Close'); nv.append(cb, fb, tb); bar.append(el('div', 'bkk42-brand', '42 Bangkok'), nv, cl); const body = el('main', 'bkk42-modal-body'); const cv = el('section', 'bkk42-view'); const fv2 = el('section', 'bkk42-view'); fv2.hidden = true; const tv = el('section', 'bkk42-view'); tv.hidden = true; body.append(cv, fv2, tv); sh.append(bar, body); mo.appendChild(sh); document.body.appendChild(mo); const show = (n) => { cb.classList.toggle('active', n === 'cluster'); fb.classList.toggle('active', n === 'friends'); tb.classList.toggle('active', n === 'top'); cv.hidden = n !== 'cluster'; fv2.hidden = n !== 'friends'; tv.hidden = n !== 'top'; if (n === 'friends') renderFriends(fv2, false, (o, t2) => { fb.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); }); else if (n === 'top') renderTop(tv, false); else renderCluster(cv); }; cb.onclick = () => show('cluster'); fb.onclick = () => show('friends'); tb.onclick = () => show('top'); cl.onclick = () => { mo.hidden = true; }; mo.addEventListener('click', (e) => { if (e.target === mo) mo.hidden = true; }); mo.openView = (n) => { mo.hidden = false; show(n); }; return mo; };
   const mountMeta = () => { const done = document.getElementById(ID.clusterTab)?.isConnected && document.getElementById(ID.clusterPane)?.isConnected && document.getElementById(ID.friendsTab)?.isConnected && document.getElementById(ID.friendsPane)?.isConnected && document.getElementById(ID.topTab)?.isConnected && document.getElementById(ID.topPane)?.isConnected; if (done) return true; const nv = document.querySelector('#main-container'); const ct = document.querySelector('#cluster-map .tab-content'); if (!nv || !ct) return false; [ID.clusterTab, ID.friendsTab, ID.topTab, ID.clusterPane, ID.friendsPane, ID.topPane, 'bi-friends-style'].forEach((id) => document.getElementById(id)?.remove()); const add = (tid, pid, label, render) => { const it = el('li'); it.id = tid; it.setAttribute('role', 'presentation'); const lk = el('a', '', label); lk.href = '#' + pid; lk.dataset.toggle = 'tab'; lk.setAttribute('role', 'tab'); const pn = el('div', 'tab-pane'); pn.id = pid; pn.setAttribute('role', 'tabpanel'); lk.addEventListener('click', () => render(pn)); it.appendChild(lk); nv.insertBefore(it, document.getElementById('cluster-shadow-host') || null); ct.appendChild(pn); return { link: lk, pane: pn }; }; add(ID.clusterTab, ID.clusterPane, 'Bangkok TH', (p) => renderCluster(p)); const fr2 = add(ID.friendsTab, ID.friendsPane, 'Friends', (p) => renderFriends(p, false, (o, t2) => { fr2.link.textContent = 'Friends' + (t2 ? ' (' + o + ')' : ''); })); add(ID.topTab, ID.topPane, 'Leaderboard', (p) => renderTop(p)); return true; };
