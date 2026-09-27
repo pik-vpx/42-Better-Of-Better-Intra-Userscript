@@ -14,8 +14,8 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.5.0
-// @changelog    Login with 42 button, auto token refresh, all v2 traffic paced to 2/sec.
+// @version      2.5.1
+// @changelog    2/sec request bucket, fewer session requests per student, seed diagnostics.
 // ==/UserScript==
 
 
@@ -55,8 +55,15 @@
   const readApiSecret = () => { try { return (localStorage.getItem(API_SECRET_KEY) || '').trim(); } catch (_) { return ''; } };
   const readApiStore = () => { try { const raw = localStorage.getItem(API_TOKEN_KEY) || ''; if (!raw) return {}; const o = JSON.parse(raw); if (o && typeof o === 'object' && !Array.isArray(o)) return o; return { a: raw }; } catch (_) { try { return { a: localStorage.getItem(API_TOKEN_KEY) || '' }; } catch (_) { return {}; } } };
   const writeApiStore = (o) => { try { localStorage.setItem(API_TOKEN_KEY, JSON.stringify(o)); } catch (_) {} };
-  const v2Queue = { tail: Promise.resolve(), at: 0 };
-  const v2Slot = () => { const run = v2Queue.tail.then(async () => { const wait = Math.max(0, 600 - (Date.now() - v2Queue.at)); if (wait) await new Promise((r) => setTimeout(r, wait)); v2Queue.at = Date.now(); }); v2Queue.tail = run.catch(() => {}); return run; };
+  const v2Starts = [];
+  const v2Slot = async () => {
+    for (;;) {
+      const now = Date.now();
+      while (v2Starts.length && now - v2Starts[0] > 1000) v2Starts.shift();
+      if (v2Starts.length < 2) { v2Starts.push(Date.now()); return; }
+      await new Promise((r) => setTimeout(r, Math.max(50, v2Starts[0] + 1000 - now + 20)));
+    }
+  };
   const oauthTokenRequest = (body) => new Promise((res, rej) => {
     if (typeof GM_xmlhttpRequest !== 'function') return rej(new Error('no GM_xhr'));
     GM_xmlhttpRequest({ method: 'POST', url: 'https://api.intra.42.fr/oauth/token', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, data: body, responseType: 'json', timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { const j = r.response != null ? r.response : JSON.parse(r.responseText); if (!j.access_token) return rej(new Error('no token')); res(j); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) });
@@ -156,7 +163,7 @@
         return m;
       } catch (_) {}
     }
-    try { const u = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login)); let level = (c[login] && c[login].level != null) ? c[login].level : null; try { const cu = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/cursus'); const main = Array.isArray(cu) ? cu.find((e) => e.slug === '42cursus') : null; if (main) level = main.level + (main.progress ? main.progress / 100 : 0); } catch (_) {} let batch = (c[login] && c[login].batch) || '', batchN = (c[login] && c[login].batchN) || 0, begin = (c[login] && c[login].begin) || ''; if (u && u.id) { try { const p = await authedJSON('https://pace-system.42.fr/api/v1/users/' + u.id + '/profile'); if (p && p.cursus_begin_date) { begin = p.cursus_begin_date; const b = batchFromDate(begin); if (b) { batch = b.label; batchN = b.n; } } } catch (_) {} } const m = { id: (u && u.id) || 0, level, batch, batchN, begin, t: now }; c[login] = m; try { localStorage.setItem(META_KEY, JSON.stringify(c)); } catch (_) {} return m; } catch (_) { return c[login] || {}; } };
+    try { const u = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login)); let level = (c[login] && c[login].level != null) ? c[login].level : null; let preBegin = ''; try { const cu = await authedJSON('https://intrapy.intra.42.fr/api/v1/users/' + encodeURIComponent(login) + '/cursus'); const main = Array.isArray(cu) ? cu.find((e) => e.slug === '42cursus') : null; if (main) level = main.level + (main.progress ? main.progress / 100 : 0); preBegin = (main && (main.begin_at || main.created_at || main.cursus_begin_date)) || ''; } catch (_) {} let batch = (c[login] && c[login].batch) || '', batchN = (c[login] && c[login].batchN) || 0, begin = preBegin || (c[login] && c[login].begin) || ''; if (u && u.id) { try { const p = await authedJSON('https://pace-system.42.fr/api/v1/users/' + u.id + '/profile'); if (p && p.cursus_begin_date) { begin = p.cursus_begin_date; const b = batchFromDate(begin); if (b) { batch = b.label; batchN = b.n; } } } catch (_) {} } const m = { id: (u && u.id) || 0, level, batch, batchN, begin, t: now }; c[login] = m; try { localStorage.setItem(META_KEY, JSON.stringify(c)); } catch (_) {} return m; } catch (_) { return c[login] || {}; } };
   const requestJSON = async (url) => { if (window.siderRuntime && window.siderRuntime.fetch) { const r = await window.siderRuntime.fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); } if (typeof GM_xmlhttpRequest === 'function') return new Promise((res, rej) => GM_xmlhttpRequest({ method: 'GET', url, responseType: 'json', withCredentials: true, timeout: 15000, onload: (r) => { if (r.status < 200 || r.status >= 300) return rej(new Error('HTTP ' + r.status)); try { res(r.response != null ? r.response : JSON.parse(r.responseText)); } catch (e) { rej(e); } }, onerror: () => rej(new Error('Network request failed')), ontimeout: () => rej(new Error('Network request timed out')) })); const r = await fetch(url, { credentials: 'include' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
   const getBangkok = async (force) => { if (!force && bangkokCache.data.length && Date.now() - bangkokCache.time < 60000) return bangkokCache.data; if (bangkokCache.promise) return bangkokCache.promise; bangkokCache.promise = requestJSON(CLUSTER_URL).then((data) => { bangkokCache.data = Array.isArray(data) ? data.filter((e) => e && !e.end_at && e.login && e.host) : [];       bangkokCache.time = Date.now(); recordSeen(bangkokCache.data, BANGKOK_CAMPUS_ID); return bangkokCache.data; }).finally(() => { bangkokCache.promise = null; }); return bangkokCache.promise; };
   const getGlobalMap = async (force) => { if (!force && globalCache.map.size && Date.now() - globalCache.time < 60000) return globalCache.map; if (globalCache.promise) return globalCache.promise; globalCache.promise = (async () => { const urls = [CLUSTER_URL].concat(ACTIVE_CAMPUSES.filter((id) => id !== BANGKOK_CAMPUS_ID).map((id) => CLUSTER_URL + '?campus_id=' + id)); const settled = await Promise.all(urls.map(async (u) => { try { const d = await requestJSON(u); return Array.isArray(d) ? d.filter((e) => e && !e.end_at && e.login && e.host) : []; } catch (_) { return []; } }));       const map = new Map(); for (const e of settled.flat()) map.set(String(e.login).toLowerCase(), e); recordSeen([...map.values()], 0); globalCache.map = map; globalCache.time = Date.now(); return map; })().finally(() => { globalCache.promise = null; }); return globalCache.promise; };
@@ -201,6 +208,7 @@
     return p;
   };
   const ROSTER_CACHE_KEY = 'bkk42-campus-roster';
+  let lastSeedHits = 0;
   const loadCampusRoster = async (id) => {
     id = Number(id);
     let rc = {};
@@ -221,7 +229,7 @@
       if (d.length < 100) break;
     }
     try {
-      const c = readMetaCache(); const now = Date.now(); let ch = false;
+      const c = readMetaCache(); const now = Date.now(); let ch = false; lastSeedHits = 0;
       for (const u of seeds) {
         const login = String(u.login).toLowerCase();
         const cus = Array.isArray(u.cursus_users) ? u.cursus_users : [];
@@ -236,6 +244,7 @@
         };
         if (m.begin && !m.batchN) { const b = batchFromDate(m.begin); if (b) { m.batch = b.label; m.batchN = b.n; } }
         c[login] = m; ch = true;
+        if (m.level != null) lastSeedHits++;
       }
       if (ch) localStorage.setItem(META_KEY, JSON.stringify(c));
     } catch (_) {}
@@ -467,7 +476,7 @@
         if (full && full.length) {
           for (const l of full) fullSet.add(l);
           roster = [...new Set(roster.concat(full))];
-          scopeNote += ' · full roster';
+          scopeNote += ' · full roster (' + lastSeedHits + ' levels)';
         }
       } catch (_) {}
     }
