@@ -4,7 +4,6 @@
 // @description  Adds Bangkok TH cluster, cross-campus Friends presence, relative login time, Batch badges and per-batch level leaderboard.
 // @match        https://meta.intra.42.fr/clusters*
 // @match        https://profile.intra.42.fr/*
-// @match        https://profile-v3.intra.42.fr/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -15,7 +14,7 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.23
+// @version      2.6.24
 // @changelog    UI redesign per ui-ux-pro-max: slate dark system, teal CTAs, hairline borders, focus/hover/press states, denser lists.
 // ==/UserScript==
 
