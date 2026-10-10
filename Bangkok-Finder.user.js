@@ -4,6 +4,7 @@
 // @description  Adds Bangkok TH cluster, cross-campus Friends presence, relative login time, Batch badges and per-batch level leaderboard.
 // @match        https://meta.intra.42.fr/clusters*
 // @match        https://profile.intra.42.fr/*
+// @match        https://profile-v3.intra.42.fr/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -14,7 +15,7 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.24
+// @version      2.6.25
 // @changelog    UI redesign per ui-ux-pro-max: slate dark system, teal CTAs, hairline borders, focus/hover/press states, denser lists.
 // ==/UserScript==
 
@@ -787,7 +788,8 @@
 
   const mountProfile = () => { createModal(); const ex = document.getElementById(ID.shortcut); if (ex?.isConnected) { document.getElementById(ID.float)?.remove(); return true; } if (ex) ex.remove(); const cl2 = [...document.querySelectorAll('a')].find((l) => l.textContent.trim() === 'Clusters'); const wr = cl2?.parentElement; if (!wr?.parentElement) return ensureFloatButton(); const mo = createModal(); const tw = wr.cloneNode(true); tw.id = ID.shortcut; const tl = tw.querySelector('a'); tl.href = '#'; tl.removeAttribute('data-bi-bangkok-bound'); const lb = tl.querySelector('span'); if (lb) lb.textContent = 'TH'; else tl.textContent = 'TH'; tl.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); mo.openView('cluster'); }, true); wr.after(tw); document.getElementById(ID.float)?.remove(); return true; };
   let spaObserver = null; let lastUrl = location.href;
-  const boot = () => { installStyle(); ensureSessionsStyle(); lastUrl = location.href;
+  const isHandshakeUrl = () => { try { const q = new URLSearchParams(location.search); return q.has('session_state') || q.has('iss') || (q.has('state') && !q.has('code')); } catch (_) { return false; } };
+  const boot = () => { if (isHandshakeUrl()) return; installStyle(); ensureSessionsStyle(); lastUrl = location.href;
     try {
       const q = new URLSearchParams(location.search);
       const code = q.get('code');
