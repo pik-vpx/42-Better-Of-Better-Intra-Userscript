@@ -15,7 +15,7 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.35
+// @version      2.6.36
 // @changelog    UI redesign per ui-ux-pro-max: slate dark system, teal CTAs, hairline borders, focus/hover/press states, denser lists.
 // ==/UserScript==
 
@@ -484,6 +484,14 @@
       return { host: b.host, begin: b.begin, end: b.end, t: Date.now() };
     } catch (_) { return null; }
   };
+  // Sync read of the persisted sessions cache (warmed by modal opens + detail drains). No API cost; newer-wins at display.
+  const lastLocCached = (login) => { try {
+    const c = JSON.parse(gmGet(LASTLOC_KEY, '{}')) || {};
+    const h = c[String(login || '').toLowerCase()];
+    if (!h || typeof h !== 'object') return null;
+    if (Array.isArray(h.sessions) && h.sessions[0]) { const b = h.sessions[0] || {}; return { host: b.host || '', begin: b.begin || '', end: b.end || '' }; }
+    if (h.host !== undefined) return { host: String(h.host || '').toUpperCase(), begin: h.begin || '', end: h.end || '' };
+  } catch (_) {} return null; };
   const SESSIONS_STYLE = 'bkk42-sessions-style';
   const ensureSessionsStyle = () => {
     if (document.getElementById(SESSIONS_STYLE)) return;
@@ -652,7 +660,7 @@
     const sortMetas = (arr) => { if (mode === 'active') arr.sort((a, b) => (((b.log && b.log.hours) == null) ? -1 : b.log.hours) - (((a.log && a.log.hours) == null) ? -1 : a.log.hours)); else arr.sort((a, b) => ((b.meta.level == null ? -1 : b.meta.level) - (a.meta.level == null ? -1 : a.meta.level))); };
     const rowSub = (row) => {
       if (row.loc) return 'Online \u00B7 ' + String(row.loc.host).toUpperCase() + ' \u00B7 ' + agoLabel(row.loc.begin_at, row.login);
-      const ll = row.lastLoc;
+      const ll = row.lastLoc || lastLocCached(row.login);
       const lt = (ll && (ll.end || ll.begin)) ? Date.parse(ll.end || ll.begin) : NaN;
       return 'Offline \u00B7 ' + seenTextFor(lt, seenTime((seenSnap || {})[String(row.login).toLowerCase()]) || NaN, ll && ll.host);
     };
