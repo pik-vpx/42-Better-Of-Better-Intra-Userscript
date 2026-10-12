@@ -15,7 +15,7 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.32
+// @version      2.6.33
 // @changelog    UI redesign per ui-ux-pro-max: slate dark system, teal CTAs, hairline borders, focus/hover/press states, denser lists.
 // ==/UserScript==
 
@@ -43,6 +43,36 @@
   const avatarRead = (login) => { login = String(login || '').toLowerCase(); let u = ''; try { const c = JSON.parse(gmGet(IMAGES_KEY, '{}')) || {}; u = c[login] || ''; } catch (_) {} if (!u) { try { const m = readMetaCache(); u = (m[login] && m[login].img) || ''; } catch (_) {} } return normAvatarSrc(u); };
   const avatarWrite = (login, url) => { login = String(login || '').toLowerCase(); url = normAvatarSrc(url); if (!login || !url) return; try { const c = JSON.parse(gmGet(IMAGES_KEY, '{}')) || {}; c[login] = url; gmSet(IMAGES_KEY, JSON.stringify(c)); } catch (_) {} try { const m = readMetaCache(); m[login] = m[login] || {}; m[login].img = url; delete m[login].noimg; gmSet(META_KEY, JSON.stringify(m)); } catch (_) {} };
   const avatarImg = (login, cls, placeholder, fallback) => { const src = avatarRead(login) || normAvatarSrc(fallback || ''); if (!src) return null; const im = el('img', cls || ''); im.src = src; im.alt = ''; im.loading = 'lazy'; im.onerror = () => { try { const cur = avatarRead(login); if (cur && cur === src) purgeBadAvatar(login); } catch (_) {} try { if (im.isConnected) { if (placeholder) im.replaceWith(el('span', 'bkk42-avatar', '?')); else im.remove(); } } catch (_) {} }; return im; };
+  // Native profile-v3 photo slot: fill it from cache ONLY when empty/broken and we hold a verified-fresh url. Never fetches the API; never touches custom art.
+  const NATIVE_AVATAR_SEL = 'div.rounded-full.w-52.h-52';
+  const bgUrlOf = (elm) => { try { return ((elm && elm.style && elm.style.backgroundImage) || '').match(/https?:\/\/[^"')\s]+/)?.[0] || ''; } catch (_) { return ''; } };
+  const fillNativeAvatar = () => { try {
+    const m = location.pathname.match(/\/users\/([^/?#]+)/);
+    const login = m ? decodeURIComponent(m[1]).toLowerCase() : '';
+    if (!login || !/^[a-z0-9_-]{2,30}$/.test(login)) return;
+    const fresh = avatarRead(login);
+    if (!fresh) return;
+    const slot = document.querySelector(NATIVE_AVATAR_SEL);
+    if (!slot) return;
+    const cur = bgUrlOf(slot);
+    if (cur && !/cdn\.intra\.42\.fr/.test(cur)) return; // custom art — leave it
+    if (cur === fresh) return;
+    const useFresh = () => { try {
+      if (!slot.isConnected) return;
+      const now = bgUrlOf(slot);
+      if (now && now !== cur) return; // someone else filled it meanwhile
+      const p2 = new Image();
+      p2.onload = () => { try {
+        if (!slot.isConnected) return;
+        slot.style.backgroundImage = 'url("' + fresh + '")';
+        if (!slot.style.backgroundSize) slot.style.backgroundSize = 'cover';
+        if (!slot.style.backgroundPosition) slot.style.backgroundPosition = 'center';
+      } catch (_) {} };
+      p2.src = fresh;
+    } catch (_) {} };
+    if (!cur) { useFresh(); return; }
+    try { const p1 = new Image(); p1.onload = () => {}; p1.onerror = () => useFresh(); p1.src = cur; } catch (_) {}
+  } catch (_) {} };
   const readSeen = () => { try { return JSON.parse(gmGet(SEEN_KEY, '{}')) || {}; } catch (_) { return {}; } };
   const seenTime = (v) => (typeof v === 'number' ? v : ((v && v.t) || 0));
   const recordSeen = (entries, campusId) => { try { const s = readSeen(); const n = Date.now(); let ch = false; for (const e of entries || []) { const l = String((e && e.login) || '').toLowerCase(); if (!l) continue; const cp = Number((e && e.campus_id) || campusId || 0); const prev = s[l]; if (!prev || n - seenTime(prev) > 60000) { s[l] = { t: n, c: cp }; ch = true; } } if (ch) { for (const k of Object.keys(s)) { if (n - seenTime(s[k]) > 2592000000) delete s[k]; } gmSet(SEEN_KEY, JSON.stringify(s)); } } catch (_) {} };
@@ -795,7 +825,7 @@
   const ensureFloatButton = () => { let f = document.getElementById(ID.float); if (!f) { f = el('button', '', 'TH'); f.id = ID.float; f.type = 'button'; f.title = 'Bangkok TH cluster'; f.setAttribute('aria-label', 'Open Bangkok TH cluster'); f.addEventListener('click', (e) => { e.preventDefault(); createModal().openView('cluster'); }); document.body.appendChild(f); } return true; };
 
 
-  const mountProfile = () => { createModal(); const ex = document.getElementById(ID.shortcut); if (ex?.isConnected) { document.getElementById(ID.float)?.remove(); return true; } if (ex) ex.remove(); const cl2 = [...document.querySelectorAll('a')].find((l) => l.textContent.trim() === 'Clusters'); const wr = cl2?.parentElement; if (!wr?.parentElement) return ensureFloatButton(); const mo = createModal(); const tw = wr.cloneNode(true); tw.id = ID.shortcut; const tl = tw.querySelector('a'); tl.href = '#'; tl.removeAttribute('data-bi-bangkok-bound'); const lb = tl.querySelector('span'); if (lb) lb.textContent = 'TH'; else tl.textContent = 'TH'; tl.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); mo.openView('cluster'); }, true); wr.after(tw); document.getElementById(ID.float)?.remove(); return true; };
+  const mountProfile = () => { try { fillNativeAvatar(); } catch (_) {} createModal(); const ex = document.getElementById(ID.shortcut); if (ex?.isConnected) { document.getElementById(ID.float)?.remove(); return true; } if (ex) ex.remove(); const cl2 = [...document.querySelectorAll('a')].find((l) => l.textContent.trim() === 'Clusters'); const wr = cl2?.parentElement; if (!wr?.parentElement) return ensureFloatButton(); const mo = createModal(); const tw = wr.cloneNode(true); tw.id = ID.shortcut; const tl = tw.querySelector('a'); tl.href = '#'; tl.removeAttribute('data-bi-bangkok-bound'); const lb = tl.querySelector('span'); if (lb) lb.textContent = 'TH'; else tl.textContent = 'TH'; tl.addEventListener('click', (e) => { e.preventDefault(); e.stopImmediatePropagation(); mo.openView('cluster'); }, true); wr.after(tw); document.getElementById(ID.float)?.remove(); return true; };
   let spaObserver = null; let lastUrl = location.href;
   const isHandshakeUrl = () => { try { const q = new URLSearchParams(location.search); return q.has('session_state') || q.has('iss') || (q.has('state') && !q.has('code')); } catch (_) { return false; } };
   const boot = () => { if (isHandshakeUrl()) return; installStyle(); ensureSessionsStyle(); lastUrl = location.href;
