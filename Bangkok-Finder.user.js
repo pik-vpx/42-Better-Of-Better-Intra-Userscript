@@ -15,7 +15,7 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.34
+// @version      2.6.35
 // @changelog    UI redesign per ui-ux-pro-max: slate dark system, teal CTAs, hairline borders, focus/hover/press states, denser lists.
 // ==/UserScript==
 
@@ -77,7 +77,15 @@
   const seenTime = (v) => (typeof v === 'number' ? v : ((v && v.t) || 0));
   const recordSeen = (entries, campusId) => { try { const s = readSeen(); const n = Date.now(); let ch = false; for (const e of entries || []) { const l = String((e && e.login) || '').toLowerCase(); if (!l) continue; const cp = Number((e && e.campus_id) || campusId || 0); const prev = s[l]; if (!prev || n - seenTime(prev) > 60000) { s[l] = { t: n, c: cp }; ch = true; } } if (ch) { for (const k of Object.keys(s)) { if (n - seenTime(s[k]) > 2592000000) delete s[k]; } gmSet(SEEN_KEY, JSON.stringify(s)); } } catch (_) {} };
   const fmtAgo = (ms) => { if (!isFinite(ms) || ms < 0) ms = 0; const t = Math.floor(ms / 1000); const d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; if (d > 0) return d + 'd ' + h + 'h'; if (h > 0) return h + 'h ' + m + 'm'; if (m > 0) return m + 'm ' + s + 's'; return s + 's'; };
-  const agoLabel = (beginAt, login, seenMap) => { if (beginAt) { const t = Date.parse(beginAt); if (!isNaN(t)) return fmtAgo(Date.now() - t); } if (login) { const s = (seenMap || readSeen())[String(login).toLowerCase()]; if (s) { const a = Date.now() - seenTime(s); if (a > 36e5) return '... ' + fmtAgo(a) + ' ago'; return 'seen ' + fmtAgo(a) + ' ago'; } } return '...'; };
+  const agoLabel = (beginAt, login, seenMap) => { if (beginAt) { const t = Date.parse(beginAt); if (!isNaN(t)) return fmtAgo(Date.now() - t); } if (login) { const s = (seenMap || readSeen())[String(login).toLowerCase()]; if (s) return seenTextFor(NaN, seenTime(s)); } return '...'; };
+  // Offline "last seen": authoritative sessions time wins when newer, else our own sighting. Single source for cards + leaderboard.
+  const seenTextFor = (sessMs, seenMs, host) => {
+    const s = (typeof sessMs === 'number' && isFinite(sessMs)) ? sessMs : NaN;
+    const v = (typeof seenMs === 'number' && isFinite(seenMs)) ? seenMs : NaN;
+    if (!isNaN(s) && (isNaN(v) || s >= v)) return 'Last seen ' + fmtAgo(Date.now() - s) + ' ago' + (host ? ' \u00B7 ' + host : '');
+    if (!isNaN(v)) { const a = Date.now() - v; return (a > 36e5 ? '... ' : 'seen ') + fmtAgo(a) + ' ago'; }
+    return '...';
+  };
   const batchFromDate = (iso) => { if (!iso) return null; const d = new Date(iso); if (isNaN(d)) return null; const y = d.getFullYear(); const n = y - 2017; if (!(n > 0 && n < 30)) return null; return { n, label: '#' + n }; };
   // Peerfinder parity (bundle: oe/ce) — status order and rules are their exact ones; staff are filtered from the roster, so not listed.
   const STATUS_LIST = ['Active', 'Pisciner', 'Freezing', 'Blackholed', 'Alumni'];
@@ -378,6 +386,14 @@
             const m = await getUserMeta(login);
             if (!card.isConnected) return;
             paintBatchPill(card, login, m);
+            if (card.classList.contains('bkk42-card') && !card.classList.contains('online')) {
+              try {
+                const ll = await getLastLocation(login);
+                const t = (ll && (ll.end || ll.begin)) ? Date.parse(ll.end || ll.begin) : NaN;
+                const sub = card.querySelector('.bkk42-sub');
+                if (sub && card.isConnected && !isNaN(t)) sub.textContent = seenTextFor(t, seenTime((readSeen()[login]) || 0) || NaN, ll && ll.host);
+              } catch (_) {}
+            }
             const det = card.querySelector('div');
             if (det && card.classList.contains('bkk42-card') && !det.querySelector('.bkk42-lv')) {
               if (m.level != null) det.appendChild(el('div', 'bkk42-lv', 'Lv ' + Number(m.level).toFixed(2)));
@@ -637,12 +653,8 @@
     const rowSub = (row) => {
       if (row.loc) return 'Online \u00B7 ' + String(row.loc.host).toUpperCase() + ' \u00B7 ' + agoLabel(row.loc.begin_at, row.login);
       const ll = row.lastLoc;
-      if (ll && (ll.end || ll.begin)) {
-        const t = Date.parse(ll.end || ll.begin);
-        const when = isNaN(t) ? '' : fmtAgo(Date.now() - t) + ' ago';
-        return 'Last seen ' + (when || 'a while ago') + (ll.host ? ' \u00B7 ' + ll.host : '');
-      }
-      return 'Offline \u00B7 ' + agoLabel(null, row.login, seenSnap);
+      const lt = (ll && (ll.end || ll.begin)) ? Date.parse(ll.end || ll.begin) : NaN;
+      return 'Offline \u00B7 ' + seenTextFor(lt, seenTime((seenSnap || {})[String(row.login).toLowerCase()]) || NaN, ll && ll.host);
     };
     const drawList = (metas) => {
       seenSnap = readSeen();
