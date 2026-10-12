@@ -15,7 +15,7 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.26
+// @version      2.6.27
 // @changelog    UI redesign per ui-ux-pro-max: slate dark system, teal CTAs, hairline borders, focus/hover/press states, denser lists.
 // ==/UserScript==
 
@@ -35,11 +35,11 @@
   let globalCache = { time: 0, map: new Map(), promise: null };
   const el = (tag, className, text) => { const n = document.createElement(tag); if (className) n.className = className; if (text !== undefined) n.textContent = text; return n; };
   const parseLogins = (v) => [...new Set(String(v || '').split(/[\s,;]+/).map((s) => s.trim().toLowerCase()).filter((s) => /^[a-z0-9_-]{2,30}$/.test(s)))];
-  const readFriends = () => { try { const v = JSON.parse(localStorage.getItem(FRIENDS_KEY) || '[]'); return Array.isArray(v) ? parseLogins(v.join(' ')) : []; } catch (_) { return []; } };
-  const writeFriends = (l) => localStorage.setItem(FRIENDS_KEY, JSON.stringify(l));
-  const readSeen = () => { try { return JSON.parse(localStorage.getItem(SEEN_KEY) || '{}') || {}; } catch (_) { return {}; } };
+  const readFriends = () => { try { const v = JSON.parse(gmGet(FRIENDS_KEY, '[]')); return Array.isArray(v) ? parseLogins(v.join(' ')) : []; } catch (_) { return []; } };
+  const writeFriends = (l) => gmSet(FRIENDS_KEY, JSON.stringify(l));
+  const readSeen = () => { try { return JSON.parse(gmGet(SEEN_KEY, '{}')) || {}; } catch (_) { return {}; } };
   const seenTime = (v) => (typeof v === 'number' ? v : ((v && v.t) || 0));
-  const recordSeen = (entries, campusId) => { try { const s = readSeen(); const n = Date.now(); let ch = false; for (const e of entries || []) { const l = String((e && e.login) || '').toLowerCase(); if (!l) continue; const cp = Number((e && e.campus_id) || campusId || 0); const prev = s[l]; if (!prev || n - seenTime(prev) > 60000) { s[l] = { t: n, c: cp }; ch = true; } } if (ch) { for (const k of Object.keys(s)) { if (n - seenTime(s[k]) > 2592000000) delete s[k]; } localStorage.setItem(SEEN_KEY, JSON.stringify(s)); } } catch (_) {} };
+  const recordSeen = (entries, campusId) => { try { const s = readSeen(); const n = Date.now(); let ch = false; for (const e of entries || []) { const l = String((e && e.login) || '').toLowerCase(); if (!l) continue; const cp = Number((e && e.campus_id) || campusId || 0); const prev = s[l]; if (!prev || n - seenTime(prev) > 60000) { s[l] = { t: n, c: cp }; ch = true; } } if (ch) { for (const k of Object.keys(s)) { if (n - seenTime(s[k]) > 2592000000) delete s[k]; } gmSet(SEEN_KEY, JSON.stringify(s)); } } catch (_) {} };
   const fmtAgo = (ms) => { if (!isFinite(ms) || ms < 0) ms = 0; const t = Math.floor(ms / 1000); const d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; if (d > 0) return d + 'd ' + h + 'h'; if (h > 0) return h + 'h ' + m + 'm'; if (m > 0) return m + 'm ' + s + 's'; return s + 's'; };
   const agoLabel = (beginAt, login, seenMap) => { if (beginAt) { const t = Date.parse(beginAt); if (!isNaN(t)) return fmtAgo(Date.now() - t); } if (login) { const s = (seenMap || readSeen())[String(login).toLowerCase()]; if (s) { const a = Date.now() - seenTime(s); if (a > 36e5) return '... ' + fmtAgo(a) + ' ago'; return 'seen ' + fmtAgo(a) + ' ago'; } } return '...'; };
   const batchFromDate = (iso) => { if (!iso) return null; const d = new Date(iso); if (isNaN(d)) return null; const y = d.getFullYear(); const n = y - 2017; if (!(n > 0 && n < 30)) return null; return { n, label: '#' + n }; };
@@ -48,7 +48,7 @@
   const statusOf = (r) => (r.pis ? 'Pisciner' : r.alg ? 'Alumni' : (r.bh && Date.parse(r.bh) < Date.now() && !r.act) ? 'Blackholed' : r.act ? 'Active' : 'Freezing');
 
 
-  const readMetaCache = () => { try { return JSON.parse(localStorage.getItem(META_KEY) || '{}') || {}; } catch (_) { return {}; } };
+  const readMetaCache = () => { try { return JSON.parse(gmGet(META_KEY, '{}')) || {}; } catch (_) { return {}; } };
   const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
   // SECURITY: never hardcode a token here — paste it in the Leaderboard UI box. Browser localStorage only, never in git.
   const API_TOKEN_KEY = 'bkk42-api-token';
@@ -136,7 +136,7 @@
     }
     return null;
   };
-  const readRosterExtra = () => { try { const v = JSON.parse(localStorage.getItem(ROSTER_EXTRA_KEY) || '[]'); return Array.isArray(v) ? parseLogins(v.join(' ')) : []; } catch (_) { return []; } };
+  const readRosterExtra = () => { try { const v = JSON.parse(gmGet(ROSTER_EXTRA_KEY, '[]')); return Array.isArray(v) ? parseLogins(v.join(' ')) : []; } catch (_) { return []; } };
   const buildRoster = (onlineLogins) => { const set = new Set(); for (const l of (onlineLogins || [])) { const s = String(l || '').toLowerCase(); if (s) set.add(s); } for (const l of Object.keys(readSeen())) set.add(String(l).toLowerCase()); for (const l of readFriends()) set.add(String(l).toLowerCase()); for (const l of readRosterExtra()) set.add(String(l).toLowerCase()); return [...set].filter((s) => /^[a-z0-9_-]{2,30}$/.test(s)); };
   const getUserMeta = async (login) => { login = String(login || '').toLowerCase(); if (!login) return {}; const c = readMetaCache(); const now = Date.now(); if (c[login] && now - (c[login].t || 0) < 604800000) return c[login];
     if (readApiToken()) {
@@ -153,7 +153,7 @@
         const st = u['staff?'] ? 'Staff' : (pisc ? 'Pisciner' : u['alumni?'] ? 'Alumni' : (u.blackholed_at && Date.parse(u.blackholed_at) < Date.now() && !u['active?']) ? 'Blackholed' : u['active?'] ? 'Active' : 'Freezing');
         const img = (u.image && u.image.versions && u.image.versions.medium) || u.image_url || prev.img || '';
         const m = { id: (u && u.id) || 0, level, batch, batchN, begin, st, img, t: now };
-        try { const cc = readMetaCache(); cc[login] = m; localStorage.setItem(META_KEY, JSON.stringify(cc)); } catch (_) {}
+        try { const cc = readMetaCache(); cc[login] = m; gmSet(META_KEY, JSON.stringify(cc)); } catch (_) {}
         return m;
       } catch (e) { console.warn('[bkk42] user meta failed', login, String((e && e.message) || e)); }
     }
@@ -164,7 +164,7 @@
   const getGlobalMap = async (force) => { if (!force && globalCache.time && Date.now() - globalCache.time < 60000) return globalCache.map; if (globalCache.promise) return globalCache.promise; globalCache.promise = (async () => { const urls = [CLUSTER_URL].concat(ACTIVE_CAMPUSES.filter((id) => id !== BANGKOK_CAMPUS_ID).map((id) => CLUSTER_URL + '?campus_id=' + id)); let okCount = 0; const settled = await Promise.all(urls.map(async (u) => { try { const d = await requestJSON(u); okCount++; return Array.isArray(d) ? d.filter((e) => e && !e.end_at && e.login && e.host) : []; } catch (e) { console.warn('[bkk42] feed failed', u.replace('https://meta.intra.42.fr', ''), String((e && e.message) || e)); return []; } })); if (!okCount) throw new Error('all cluster feed requests failed');       const map = new Map(); for (const e of settled.flat()) map.set(String(e.login).toLowerCase(), e); recordSeen([...map.values()], 0); globalCache.map = map; globalCache.time = Date.now(); return map; })().finally(() => { globalCache.promise = null; }); return globalCache.promise; };
   const CAMPUS_NAMES_KEY = 'bkk42-campus-names';
   const campusNameCache = { map: null, promise: null };
-  const readCampusNames = () => { try { return JSON.parse(localStorage.getItem(CAMPUS_NAMES_KEY) || '{}') || {}; } catch (_) { return {}; } };
+  const readCampusNames = () => { try { return JSON.parse(gmGet(CAMPUS_NAMES_KEY, '{}')) || {}; } catch (_) { return {}; } };
   // Campus names from Better Intra's public campuses.json (MIT) — Bangkok pinned, rest fall back to Campus {id}.
   const STATIC_CAMPUS_NAMES = { 9: 'Lyon', 12: 'Belgium', 16: 'Khouribga', 17: 'Moscow', 21: 'Benguerir', 22: 'Madrid', 23: 'Kazan', 26: 'Tokyo', 29: 'Seoul', 30: 'Rome', 31: 'Angouleme', 32: 'Yerevan', 33: 'Bangkok', 34: 'Kuala Lumpur', 35: 'Amman', 37: 'Malaga', 39: 'Heilbronn', 40: 'Urduliz', 41: 'Nice', 43: 'Abu Dhabi', 44: 'Wolfsburg', 46: 'Barcelona', 47: 'Lausanne', 48: 'Mulhouse', 49: 'Istanbul', 50: 'Kocaeli', 51: 'Berlin', 53: 'Vienna', 54: '42 Central', 55: 'Tétouan' };
   const loadCampusNames = () => {
@@ -180,7 +180,7 @@
             const id = Number(cp && cp.id);
             if (id && cp.name) merged[id] = String(cp.name);
           }
-          try { localStorage.setItem(CAMPUS_NAMES_KEY, JSON.stringify(merged)); } catch (_) {}
+          try { gmSet(CAMPUS_NAMES_KEY, JSON.stringify(merged)); } catch (_) {}
         } catch (e) { console.warn('[bkk42] campus names failed', String((e && e.message) || e)); }
         return merged;
       })();
@@ -215,7 +215,7 @@
     lastRosterFresh = false;
     lastRosterSource = ROSTER_SLUGS.join('+');
     let rc = {};
-    try { rc = JSON.parse(localStorage.getItem(ROSTER_CACHE_KEY) || '{}') || {}; } catch (_) {}
+    try { rc = JSON.parse(gmGet(ROSTER_CACHE_KEY, '{}')) || {}; } catch (_) {}
     if (!force && rc[id] && Date.now() - (rc[id].t || 0) < 86400000 && Array.isArray(rc[id].logins) && rc[id].logins.length) return rc[id].logins;
     if (!readApiToken()) return null;
     const slugs = ROSTER_SLUGS;
@@ -281,9 +281,9 @@
         c[login] = m; ch = true;
         if (m.level != null) lastSeedHits++;
       }
-      if (ch) { for (const k of Object.keys(c)) { if (now - ((c[k] && c[k].t) || 0) > 2592000000) delete c[k]; } localStorage.setItem(META_KEY, JSON.stringify(c)); }
+      if (ch) { for (const k of Object.keys(c)) { if (now - ((c[k] && c[k].t) || 0) > 2592000000) delete c[k]; } gmSet(META_KEY, JSON.stringify(c)); }
     } catch (_) {}
-    try { if (logins.length) { rc[id] = { t: Date.now(), logins }; localStorage.setItem(ROSTER_CACHE_KEY, JSON.stringify(rc)); } } catch (_) {}
+    try { if (logins.length) { rc[id] = { t: Date.now(), logins }; gmSet(ROSTER_CACHE_KEY, JSON.stringify(rc)); } } catch (_) {}
     return logins;
   };
   const bkk42RosterDebug = async (id) => {
@@ -353,9 +353,9 @@
     else setTimeout(() => { runQueue(); }, 1500);
   };
   const renderCluster = async (root, force) => { const myToken = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1)); const alive = () => root.isConnected && root.dataset.loadToken === myToken; root.className = 'bkk42-root'; root.replaceChildren(); const hh = makeHead('Bangkok TH', 'Loading live workstations...'); const total = el('div', 'bkk42-total'); const tn = el('strong', '', '--'); total.append(tn, document.createTextNode(' Online')); const ref = el('button', 'primary', 'Refresh'); ref.type = 'button'; ref.onclick = () => renderCluster(root, true); hh.actions.append(total, ref); root.appendChild(hh.head); try { ref.disabled = true; const locs = await getBangkok(force); if (!alive()) return; const fr = new Set(readFriends()); tn.textContent = String(locs.length); hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const zones = el('div', 'bkk42-zones'); for (let z = 1; z <= 3; z++) { const users = locs.filter((e) => String(e.host).toLowerCase().startsWith('z' + z + 't')); const zone = el('section', 'bkk42-zone'); zone.appendChild(el('h3', '', 'Zone ' + z + ' \u00B7 ' + users.length + ' online')); const tm = new Map(); for (const u of users) { const m2 = String(u.host).match(/^z\d+t(\d+)c(\d+)$/i); if (!m2) continue; const tb = Number(m2[1]); if (!tm.has(tb)) tm.set(tb, new Map()); tm.get(tb).set(Number(m2[2]), u); } if (!tm.size) zone.appendChild(el('div', 'bkk42-empty', 'No active tables')); else { const tables = el('div', 'bkk42-tables'); for (const tt of [...tm].sort((a, b) => a[0] - b[0])) { const table = el('div', 'bkk42-table'); table.appendChild(el('div', 'bkk42-table-title', 'Table T' + tt[0])); const grid = el('div', 'bkk42-chairs'); for (let ch = 1; ch <= 4; ch++) { const u = tt[1].get(ch); const login = u ? String(u.login).toLowerCase() : ''; const seat = el(u ? 'a' : 'div', 'bkk42-seat' + (u && fr.has(login) ? ' friend' : '') + (u ? '' : ' empty')); if (u) { seat.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login); if (u.cdn_uri) { const im = el('img'); im.src = String(u.cdn_uri); im.alt = ''; im.loading = 'lazy'; seat.appendChild(im); } } seat.append(el('span', 'bkk42-host', 'Z' + z + ' \u00B7 T' + tt[0] + ' \u00B7 C' + ch), el('span', 'bkk42-login', u ? login + (fr.has(login) ? ' \u2605' : '') : 'Empty')); if (u) { seat.appendChild(el('span', 'bkk42-sub', agoLabel(u.begin_at, login))); seat.appendChild(makeDotsButton(login)); seat.dataset.login = login; } grid.appendChild(seat); } table.appendChild(grid); tables.appendChild(table); } zone.appendChild(tables); } zones.appendChild(zone); } root.appendChild(zones); enrichCards(root); } catch (e) { if (alive()) { console.warn('[bkk42] cluster feed failed', String((e && e.message) || e)); hh.note.textContent = 'Live feed unavailable'; root.appendChild(el('div', 'bkk42-error', 'Could not load Bangkok cluster locations.')); } } finally { ref.disabled = false; } };
-  const purgeBadAvatar = (login) => { try { const c = JSON.parse(localStorage.getItem(IMAGES_KEY) || '{}') || {}; if (c[login]) { delete c[login]; localStorage.setItem(IMAGES_KEY, JSON.stringify(c)); } } catch (_) {} try { const m = readMetaCache(); if (m[login] && m[login].img) { delete m[login].img; localStorage.setItem(META_KEY, JSON.stringify(m)); } } catch (_) {} };
+  const purgeBadAvatar = (login) => { try { const c = JSON.parse(gmGet(IMAGES_KEY, '{}')) || {}; if (c[login]) { delete c[login]; gmSet(IMAGES_KEY, JSON.stringify(c)); } } catch (_) {} try { const m = readMetaCache(); if (m[login] && m[login].img) { delete m[login].img; gmSet(META_KEY, JSON.stringify(m)); } } catch (_) {} };
   const avatarOnFail = (im, login) => { im.onerror = () => { purgeBadAvatar(login); if (im.isConnected) im.replaceWith(el('span', 'bkk42-avatar', '?')); }; };
-  const hydrateFriendImages = async (grid) => { let cache = {}; try { cache = JSON.parse(localStorage.getItem(IMAGES_KEY) || '{}') || {}; } catch (_) {} let mm = {}; try { mm = readMetaCache(); } catch (_) {} for (const card of [...grid.querySelectorAll('.bkk42-card[data-login]')].slice(0, 30)) { if (!card.isConnected || card.querySelector('img')) continue; const login = card.dataset.login; let u2 = cache[login] || (mm[login] && mm[login].img) || '';       if (!u2 && readApiToken()) { try { const u = await apiV2('/users/' + encodeURIComponent(login)); const cand = (u && (u.image_url || (u.image && u.image.link))) || ''; if (cand) { u2 = String(cand); cache[login] = u2; localStorage.setItem(IMAGES_KEY, JSON.stringify(cache)); } } catch (_) {} } if (u2 && card.isConnected && !card.querySelector('img')) { const im = el('img'); im.src = u2; im.alt = ''; im.loading = 'lazy'; avatarOnFail(im, login); card.querySelector('.bkk42-avatar')?.replaceWith(im); } } };
+  const hydrateFriendImages = async (grid) => { let cache = {}; try { cache = JSON.parse(gmGet(IMAGES_KEY, '{}')) || {}; } catch (_) {} let mm = {}; try { mm = readMetaCache(); } catch (_) {} for (const card of [...grid.querySelectorAll('.bkk42-card[data-login]')].slice(0, 30)) { if (!card.isConnected || card.querySelector('img')) continue; const login = card.dataset.login; let u2 = cache[login] || (mm[login] && mm[login].img) || '';       if (!u2 && readApiToken()) { try { const u = await apiV2('/users/' + encodeURIComponent(login)); const cand = (u && (u.image_url || (u.image && u.image.link))) || ''; if (cand) { u2 = String(cand); cache[login] = u2; gmSet(IMAGES_KEY, JSON.stringify(cache)); } } catch (_) {} } if (u2 && card.isConnected && !card.querySelector('img')) { const im = el('img'); im.src = u2; im.alt = ''; im.loading = 'lazy'; avatarOnFail(im, login); card.querySelector('.bkk42-avatar')?.replaceWith(im); } } };
   const renderFriends = async (root, force, onCount) => { onCount = onCount || (() => {}); const myToken = (root.dataset.loadToken = String((Number(root.dataset.loadToken) || 0) + 1)); const alive = () => root.isConnected && root.dataset.loadToken === myToken; root.className = 'bkk42-root'; root.replaceChildren(); const hh = makeHead('Friends \u00B7 all campuses', 'Checking live locations...'); const man = el('button', '', 'Manage list'); const ref = el('button', 'primary', 'Refresh'); hh.actions.append(man, ref); const ed = el('div', 'bkk42-editor'); const ta = el('textarea'); ta.placeholder = 'login1\nlogin2\nlogin3'; ta.value = readFriends().join('\n'); const row = el('div', 'bkk42-editor-row'); const sv = el('button', 'primary', 'Save list'); row.append(sv, el('span', 'bkk42-hint', 'Separate logins with spaces, commas, or new lines.')); ed.append(ta, row); const grid = el('div', 'bkk42-friends'); root.append(hh.head, ed, grid); man.onclick = () => { ed.classList.toggle('open'); if (ed.classList.contains('open')) ta.focus(); }; ref.onclick = () => renderFriends(root, true, onCount); sv.onclick = () => { writeFriends(parseLogins(ta.value)); renderFriends(root, false, onCount); }; let live = new Map(); try { ref.disabled = true; live = await getGlobalMap(force); if (!alive()) return; hh.note.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' \u00B7 all campuses'; } catch (e) { if (alive()) { console.warn('[bkk42] friends feed failed', String((e && e.message) || e)); hh.note.textContent = 'Live feed unavailable'; } } finally { ref.disabled = false; } if (!alive()) return; const fr = readFriends(); onCount(fr.filter((l) => live.has(l)).length, fr.length); if (!fr.length) grid.appendChild(el('div', 'bkk42-empty', 'No friends yet. Select Manage list to add 42 logins.')); for (const login of fr) { const loc = live.get(login); const card = el('div', 'bkk42-card' + (loc ? ' online' : '')); card.dataset.login = login; if (loc && loc.cdn_uri) { const im = el('img'); im.src = String(loc.cdn_uri); im.alt = ''; im.loading = 'lazy'; avatarOnFail(im, login); card.appendChild(im); } else card.appendChild(el('span', 'bkk42-avatar', '?')); const det = el('div'); const pf = el('a', '', login); pf.href = 'https://profile.intra.42.fr/users/' + encodeURIComponent(login); const suf = loc && Number(loc.campus_id) !== BANGKOK_CAMPUS_ID ? ' \u00B7 campus ' + loc.campus_id : ''; det.append(pf, el('div', 'bkk42-status', loc ? 'Online \u00B7 ' + String(loc.host).toUpperCase() + suf : 'Offline')); det.appendChild(el('div', 'bkk42-sub', agoLabel(loc && loc.begin_at, login))); det.appendChild(makeDotsButton(login)); card.appendChild(det); grid.appendChild(card); } setTimeout(() => { if (grid.isConnected) hydrateFriendImages(grid); }, 2000); enrichCards(root); };
   const fmtHours = (h) => { if (h == null || !isFinite(h)) return '\u2014h'; const m = Math.round(h * 60); const hh = Math.floor(m / 60); if (hh < 1) return m + 'm'; return hh + 'h ' + (m % 60) + 'm'; };
   const getLog30d = async (login) => {
@@ -375,7 +375,7 @@
       } catch (e) { console.warn('[bkk42] locations_stats failed', login, String((e && e.message) || e)); }
 
       if (hours != null) {
-        try { const cc = readMetaCache(); cc[login] = Object.assign({}, cc[login], { log30d: hours, logApprox: approx, logT: now, t: (cc[login] && cc[login].t) || now }); localStorage.setItem(META_KEY, JSON.stringify(cc)); } catch (_) {}
+        try { const cc = readMetaCache(); cc[login] = Object.assign({}, cc[login], { log30d: hours, logApprox: approx, logT: now, t: (cc[login] && cc[login].t) || now }); gmSet(META_KEY, JSON.stringify(cc)); } catch (_) {}
       }
       return { hours, approx };
     } catch (_) { return { hours: null, approx: true }; }
@@ -385,7 +385,7 @@
     login = String(login || '').toLowerCase();
     if (!login) return [];
     let c = {};
-    try { c = JSON.parse(localStorage.getItem(LASTLOC_KEY) || '{}') || {}; } catch (_) {}
+    try { c = JSON.parse(gmGet(LASTLOC_KEY, '{}')) || {}; } catch (_) {}
     const hit = c[login];
     if (hit && Array.isArray(hit.sessions) && Date.now() - (hit.t || 0) < 86400000) return hit.sessions;
     const legacy = (hit && hit.host !== undefined && !Array.isArray(hit.sessions))
@@ -393,7 +393,7 @@
       : null;
     if (legacy && Date.now() - (hit.t || 0) < 86400000) {
       c[login] = { sessions: legacy, t: hit.t || Date.now() };
-      try { localStorage.setItem(LASTLOC_KEY, JSON.stringify(c)); } catch (_) {}
+      try { gmSet(LASTLOC_KEY, JSON.stringify(c)); } catch (_) {}
       return legacy;
     }
     if (!readApiToken()) return legacy || (Array.isArray(hit && hit.sessions) ? hit.sessions : []);
@@ -414,7 +414,7 @@
       try {
         const arr = mapLocs(await withTimeout(apiV2(path), 10000));
         c[login] = { sessions: arr, t: Date.now() };
-        try { localStorage.setItem(LASTLOC_KEY, JSON.stringify(c)); } catch (_) {}
+        try { gmSet(LASTLOC_KEY, JSON.stringify(c)); } catch (_) {}
         return arr;
       } catch (e) { errs.push(path.split('?')[0] + ': ' + String((e && e.message) || e)); }
     }
@@ -558,7 +558,7 @@
     ta.value = readRosterExtra().join('\n'); ta.style.minHeight = '48px';
     const irow = el('div', 'bkk42-editor-row');
     const isv = el('button', '', 'Save roster'); isv.type = 'button';
-    isv.onclick = () => { try { localStorage.setItem(ROSTER_EXTRA_KEY, JSON.stringify(parseLogins(ta.value))); } catch (_) {} renderTop(root, false, keep()); };
+    isv.onclick = () => { try { gmSet(ROSTER_EXTRA_KEY, JSON.stringify(parseLogins(ta.value))); } catch (_) {} renderTop(root, false, keep()); };
     irow.append(isv, el('span', 'bkk42-hint', 'Stored locally. Merges with seen + friends.'));
     const trow = el('div', 'bkk42-editor-row');
     const loginBtn = el('button', 'primary', 'Login with 42'); loginBtn.type = 'button';
