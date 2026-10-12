@@ -15,7 +15,7 @@
 // @connect      api.intra.42.fr
 // @updateURL    https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/pik-vpx/42-Better-Of-Better-Intra-Userscript/main/Bangkok-Finder.user.js
-// @version      2.6.33
+// @version      2.6.34
 // @changelog    UI redesign per ui-ux-pro-max: slate dark system, teal CTAs, hairline borders, focus/hover/press states, denser lists.
 // ==/UserScript==
 
@@ -246,6 +246,7 @@
   let lastSeedHits = 0;
   let lastRosterSource = '';
   let lastRosterFresh = false;
+  let lastAutoDrain = { missing: -1, t: 0 };
   // Peerfinder parity: their exact hardcoded cursus list (bundle: ke=["42cursus","c-piscine"]) — no discovery.
   const ROSTER_SLUGS = ['42cursus', 'c-piscine'];
   const loadCampusRoster = async (id, onPage, force) => {
@@ -809,7 +810,15 @@
     }
     const missing = pending().length;
     if (missing) { loadBtn.textContent = mode === 'active' ? 'Load activity (' + missing + ' left)' : 'Load details (' + missing + ' new)'; loadBtn.hidden = false; }
-    if (missing && missing <= 50 && stopBtn.hidden && alive()) { try { loadMissing().catch(() => {}); } catch (_) {} }
+    // Auto-drain: converge without clicks (respects the Load: limit inside loadMissing). Skips when a load
+    // runs, no token/token rejected, or the same residue stalled <5min ago (avoids looping on a dead token).
+    if (missing && stopBtn.hidden && alive() && readApiToken() && apiStatus.ok !== false) {
+      const nowT = Date.now();
+      if (!(lastAutoDrain.missing === missing && (nowT - lastAutoDrain.t) < 300000)) {
+        lastAutoDrain = { missing, t: nowT };
+        try { loadMissing().catch(() => {}); } catch (_) {}
+      }
+    }
     stampDone(metas.length);
     if (campus !== 'all' && apiStatus.ok === false) hh.note.textContent += ' · API token rejected — Login with 42 again';
   };
